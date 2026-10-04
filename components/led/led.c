@@ -44,15 +44,22 @@ static void hw_set(bool on)
     }
 }
 #else
-static esp_err_t hw_init(void)
-{
-    gpio_reset_pin(CONFIG_NOGPS_LED_GPIO);
-    return gpio_set_direction(CONFIG_NOGPS_LED_GPIO, GPIO_MODE_OUTPUT);
-}
+#if CONFIG_NOGPS_LED_ACTIVE_LOW
+#define LED_ON_LEVEL 0
+#else
+#define LED_ON_LEVEL 1
+#endif
 
 static void hw_set(bool on)
 {
-    gpio_set_level(CONFIG_NOGPS_LED_GPIO, on);
+    gpio_set_level(CONFIG_NOGPS_LED_GPIO, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
+}
+
+static esp_err_t hw_init(void)
+{
+    gpio_reset_pin(CONFIG_NOGPS_LED_GPIO);
+    hw_set(false);      // сначала уровень «погашен», потом выход — без вспышки при включении
+    return gpio_set_direction(CONFIG_NOGPS_LED_GPIO, GPIO_MODE_OUTPUT);
 }
 #endif
 
