@@ -84,3 +84,6 @@ Desktop.ini
 build_*/
 sdkconfig.c3
 sdkconfig.c3.old
+
+# Записывает чип последней сборки и меняется при каждом переключении S3/C3
+dependencies.lock
