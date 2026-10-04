@@ -20,6 +20,8 @@
 #define REINIT_MS          1000     // IMU-11
 #define SLOW_ODR_HZ        150      // IMU-12
 #define BATCH_MAX          64
+// На двухъядерных чипах — ядро 1, отдельно от Wi-Fi; на одноядерных (ESP32-C3) — единственное.
+#define IMU_CORE           (portNUM_PROCESSORS - 1)
 
 static imu_config_t s_cfg;
 static imu_sample_cb_t s_cb;
@@ -298,6 +300,6 @@ esp_err_t imu_start(const imu_config_t *cfg, imu_sample_cb_t cb, void *ctx)
         return err;
     }
     BaseType_t ok = xTaskCreatePinnedToCore(imu_task, "imu_task", 6144, NULL,
-                                            configMAX_PRIORITIES - 2, NULL, 1);
+                                            configMAX_PRIORITIES - 2, NULL, IMU_CORE);
     return ok == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
 }

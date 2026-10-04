@@ -4,7 +4,8 @@ menu "NoGPS питание"
         int "GPIO делителя напряжения бортовой сети (-1 — делителя нет)"
         default 1
         help
-            Только ADC1: у ESP32-S3 это GPIO1–GPIO10. ADC2 не работает вместе с Wi-Fi.
+            Только ADC1: у ESP32-S3 это GPIO1–GPIO10, у ESP32-C3 — GPIO0–GPIO4. ADC2 не работает
+            вместе с Wi-Fi.
             Схема: +12 В — верхнее плечо — GPIO — нижнее плечо — GND, параллельно нижнему 100 нФ.
 
     config NOGPS_VBAT_R_TOP
@@ -13,6 +14,10 @@ menu "NoGPS питание"
 
     config NOGPS_VBAT_R_BOTTOM
         int "Нижнее плечо делителя, Ом"
+        default 18000 if IDF_TARGET_ESP32C3
         default 22000
+        help
+            АЦП ESP32-S3 точно измеряет примерно до 3.1 В, ESP32-C3 — до 2.5 В. Плечо подбирается так,
+            чтобы 16 В бортовой сети давали на входе меньше этого предела.
 
 endmenu

@@ -10,9 +10,11 @@ menu "NoGPS"
             default 0
         config NOGPS_IMU_SDA
             int "SDA GPIO"
+            default 6 if IDF_TARGET_ESP32C3
             default 8
         config NOGPS_IMU_SCL
             int "SCL GPIO"
+            default 7 if IDF_TARGET_ESP32C3
             default 9
         config NOGPS_IMU_I2C_FREQ
             int "Частота I2C, Гц"

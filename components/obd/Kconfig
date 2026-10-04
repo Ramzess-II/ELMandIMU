@@ -6,10 +6,12 @@ menu "NoGPS OBD (ELM327)"
 
     config NOGPS_OBD_TX
         int "TX GPIO (к RX адаптера)"
+        default 4 if IDF_TARGET_ESP32C3
         default 5
 
     config NOGPS_OBD_RX
         int "RX GPIO (от TX адаптера)"
+        default 5 if IDF_TARGET_ESP32C3
         default 6
 
     config NOGPS_OBD_SIMULATE

@@ -1,13 +1,14 @@
 menu "NoGPS LED"
 
     config NOGPS_LED_WS2812
-        bool "Адресный светодиод WS2812 (как на ESP32-S3-Zero)"
+        bool "Адресный светодиод WS2812 (как на ESP32-S3-Zero и ESP32-C3-Zero)"
         default y
         help
             Выключить, если светодиод обычный, на GPIO через резистор.
 
     config NOGPS_LED_GPIO
         int "GPIO светодиода"
+        default 10 if IDF_TARGET_ESP32C3
         default 21
 
     config NOGPS_LED_BRIGHTNESS

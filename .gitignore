@@ -79,3 +79,8 @@ Desktop.ini
 
 # Локальные пути VS Code
 .vscode/settings.json
+
+# Сборка под второй чип в отдельной папке
+build_*/
+sdkconfig.c3
+sdkconfig.c3.old
