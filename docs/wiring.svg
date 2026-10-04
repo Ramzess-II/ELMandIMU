@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 500" font-family="Segoe UI, Helvetica, Arial, sans-serif" role="img" aria-label="Схема подключения ESP32-S3-Zero: гироскоп ICM-20602, адаптер ELM327, делитель напряжения">
+  <rect x="0" y="0" width="900" height="500" rx="14" fill="#f6f8fa"/>
+  <text x="450" y="38" text-anchor="middle" font-size="20" font-weight="600" fill="#1f2328">Блок датчиков NoGPS — схема подключения</text>
+
+  <!-- wires, left -->
+  <g fill="none" stroke-width="3" stroke-linecap="round">
+    <path d="M250 130 H360" stroke="#d1242f"/>
+    <path d="M250 162 H360" stroke="#57606a"/>
+    <path d="M250 226 H360" stroke="#1a7f37"/>
+    <path d="M250 354 H360" stroke="#bc4c00"/>
+    <path d="M250 386 H360" stroke="#8250df"/>
+    <!-- wires, right -->
+    <path d="M540 322 H650" stroke="#0969da"/>
+    <path d="M540 354 H650" stroke="#bf3989"/>
+  </g>
+
+  <!-- board -->
+  <rect x="360" y="70" width="180" height="350" rx="10" fill="#1b2a4e"/>
+  <rect x="420" y="58" width="60" height="26" rx="5" fill="#8c959f"/>
+  <text x="450" y="76" text-anchor="middle" font-size="11" fill="#1f2328">USB-C</text>
+  <text x="450" y="230" text-anchor="middle" font-size="15" font-weight="600" fill="#ffffff">ESP32-S3</text>
+  <text x="450" y="250" text-anchor="middle" font-size="15" font-weight="600" fill="#ffffff">Zero</text>
+  <circle cx="450" cy="285" r="9" fill="#2da44e"/>
+  <text x="450" y="312" text-anchor="middle" font-size="11" fill="#c9d1d9">светодиод</text>
+  <text x="450" y="326" text-anchor="middle" font-size="11" fill="#c9d1d9">GPIO21</text>
+
+  <!-- pins left -->
+  <g font-size="12" fill="#8b949e">
+    <g fill="#ffffff" font-weight="600">
+      <text x="374" y="134">5V</text>
+      <text x="374" y="166">GND</text>
+      <text x="374" y="198">3V3</text>
+      <text x="374" y="230">GPIO1</text>
+      <text x="374" y="358">GPIO5</text>
+      <text x="374" y="390">GPIO6</text>
+    </g>
+    <text x="374" y="262">GPIO2</text>
+    <text x="374" y="294">GPIO3</text>
+    <text x="374" y="326">GPIO4</text>
+    <!-- pins right -->
+    <g text-anchor="end">
+      <text x="526" y="134">TX</text>
+      <text x="526" y="166">RX</text>
+      <text x="526" y="198">GPIO13</text>
+      <text x="526" y="230">GPIO12</text>
+      <text x="526" y="262">GPIO11</text>
+      <text x="526" y="294">GPIO10</text>
+      <text x="526" y="390">GPIO7</text>
+      <g fill="#ffffff" font-weight="600">
+        <text x="526" y="326">GPIO9</text>
+        <text x="526" y="358">GPIO8</text>
+      </g>
+    </g>
+  </g>
+  <g fill="#d4a72c">
+    <circle cx="360" cy="130" r="5"/><circle cx="360" cy="162" r="5"/><circle cx="360" cy="194" r="5"/>
+    <circle cx="360" cy="226" r="5"/><circle cx="360" cy="258" r="5"/><circle cx="360" cy="290" r="5"/>
+    <circle cx="360" cy="322" r="5"/><circle cx="360" cy="354" r="5"/><circle cx="360" cy="386" r="5"/>
+    <circle cx="540" cy="130" r="5"/><circle cx="540" cy="162" r="5"/><circle cx="540" cy="194" r="5"/>
+    <circle cx="540" cy="226" r="5"/><circle cx="540" cy="258" r="5"/><circle cx="540" cy="290" r="5"/>
+    <circle cx="540" cy="322" r="5"/><circle cx="540" cy="354" r="5"/><circle cx="540" cy="386" r="5"/>
+  </g>
+
+  <!-- power block -->
+  <rect x="40" y="106" width="210" height="80" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1.5"/>
+  <text x="54" y="128" font-size="14" font-weight="600" fill="#1f2328">Питание</text>
+  <text x="54" y="148" font-size="12" fill="#57606a">преобразователь 12 → 5 В</text>
+  <text x="54" y="166" font-size="12" fill="#57606a">от вывода 16 разъёма OBD-II</text>
+  <text x="305" y="123" text-anchor="middle" font-size="11" fill="#d1242f">+5 В</text>
+  <text x="305" y="155" text-anchor="middle" font-size="11" fill="#57606a">GND</text>
+
+  <!-- divider block -->
+  <rect x="40" y="198" width="210" height="76" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1.5"/>
+  <text x="54" y="220" font-size="14" font-weight="600" fill="#1f2328">Делитель напряжения</text>
+  <text x="54" y="240" font-size="12" fill="#57606a">+12 В — 100 кОм — GPIO1</text>
+  <text x="54" y="258" font-size="12" fill="#57606a">GPIO1 — 22 кОм ‖ 100 нФ — GND</text>
+  <text x="305" y="219" text-anchor="middle" font-size="11" fill="#1a7f37">АЦП</text>
+
+  <!-- ELM block -->
+  <rect x="40" y="322" width="210" height="98" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1.5"/>
+  <text x="54" y="344" font-size="14" font-weight="600" fill="#1f2328">ELM327 (UART)</text>
+  <text x="54" y="364" font-size="12" fill="#57606a">RX адаптера</text>
+  <text x="54" y="390" font-size="12" fill="#57606a">TX адаптера (не больше 3.3 В!)</text>
+  <text x="54" y="410" font-size="12" fill="#57606a">GND — общая земля</text>
+  <text x="305" y="347" text-anchor="middle" font-size="11" fill="#bc4c00">TX →</text>
+  <text x="305" y="379" text-anchor="middle" font-size="11" fill="#8250df">← RX</text>
+
+  <!-- IMU block -->
+  <rect x="650" y="290" width="210" height="130" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1.5"/>
+  <text x="664" y="312" font-size="14" font-weight="600" fill="#1f2328">ICM-20602 (I²C)</text>
+  <text x="664" y="330" font-size="12" fill="#57606a">SCL</text>
+  <text x="664" y="358" font-size="12" fill="#57606a">SDA</text>
+  <text x="664" y="382" font-size="12" fill="#57606a">VCC, CS → 3V3</text>
+  <text x="664" y="400" font-size="12" fill="#57606a">GND, SA0 → GND (адрес 0x68)</text>
+  <text x="595" y="315" text-anchor="middle" font-size="11" fill="#0969da">SCL</text>
+  <text x="595" y="347" text-anchor="middle" font-size="11" fill="#bf3989">SDA</text>
+
+  <!-- phone -->
+  <rect x="650" y="106" width="210" height="110" rx="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1.5"/>
+  <text x="664" y="128" font-size="14" font-weight="600" fill="#1f2328">Телефон (Wi-Fi)</text>
+  <text x="664" y="148" font-size="12" fill="#57606a">сеть NoGPS-XXXX</text>
+  <text x="664" y="166" font-size="12" fill="#57606a">UDP 192.168.4.1:4210</text>
+  <text x="664" y="184" font-size="12" fill="#57606a">курс, скорость, события —</text>
+  <text x="664" y="202" font-size="12" fill="#57606a">50 раз в секунду</text>
+  <g fill="none" stroke="#0969da" stroke-width="2.5" stroke-linecap="round">
+    <path d="M560 172 q14 -12 28 0"/>
+    <path d="M552 160 q22 -20 44 0"/>
+    <path d="M544 148 q30 -28 60 0"/>
+  </g>
+  <circle cx="574" cy="182" r="3.5" fill="#0969da"/>
+  <path d="M612 162 H642" stroke="#0969da" stroke-width="2" stroke-dasharray="5 4" fill="none"/>
+
+  <text x="450" y="462" text-anchor="middle" font-size="12" fill="#57606a">Не используйте GPIO0, 3, 45, 46 (считываются при загрузке), GPIO19/20 (USB), GPIO43/44 (UART0).</text>
+  <text x="450" y="482" text-anchor="middle" font-size="12" fill="#57606a">Все пины задаются в menuconfig.</text>
+</svg>

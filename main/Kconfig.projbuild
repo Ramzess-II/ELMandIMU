@@ -1,0 +1,34 @@
+menu "NoGPS"
+
+    config NOGPS_WIFI_PASS
+        string "Пароль Wi-Fi по умолчанию (8–63 символа, меняется командой SET)"
+        default "12345678"
+
+    menu "IMU"
+        config NOGPS_IMU_I2C_PORT
+            int "Номер I2C"
+            default 0
+        config NOGPS_IMU_SDA
+            int "SDA GPIO"
+            default 8
+        config NOGPS_IMU_SCL
+            int "SCL GPIO"
+            default 9
+        config NOGPS_IMU_I2C_FREQ
+            int "Частота I2C, Гц"
+            default 400000
+        config NOGPS_IMU_ODR
+            int "Частота IMU, Гц (драйвер выберет ближайшую не ниже)"
+            default 400
+        config NOGPS_IMU_GYRO_RANGE
+            int "Диапазон гироскопа, °/с"
+            default 250
+        config NOGPS_IMU_ACCEL_RANGE
+            int "Диапазон акселерометра, g"
+            default 4
+        config NOGPS_IMU_LPF
+            int "Встроенный фильтр, Гц"
+            default 40
+    endmenu
+
+endmenu

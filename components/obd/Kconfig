@@ -1,0 +1,22 @@
+menu "NoGPS OBD (ELM327)"
+
+    config NOGPS_OBD_UART_PORT
+        int "Номер UART"
+        default 1
+
+    config NOGPS_OBD_TX
+        int "TX GPIO (к RX адаптера)"
+        default 5
+
+    config NOGPS_OBD_RX
+        int "RX GPIO (от TX адаптера)"
+        default 6
+
+    config NOGPS_OBD_SIMULATE
+        bool "Имитация OBD: скорость по синусу 0–60 км/ч, UART не трогается"
+        default n
+        help
+            Для проверки блока на столе без адаптера (ТЗ, раздел 13). Период 60 с, половину времени
+            скорость 0, чтобы проверялись и стоянки.
+
+endmenu
