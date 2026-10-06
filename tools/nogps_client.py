@@ -94,9 +94,13 @@ def main():
                 flags = int(f[9], 16)
                 names = [n for i, n in enumerate(FLAGS) if flags >> i & 1]
                 rate = n_ngd / (now - t0) if now > t0 else 0
+                acc = ""
+                if len(f) >= 14 and f[10] != "":
+                    acc = (f" ускорение h1={int(f[10]) / 1000:+.2f} h2={int(f[11]) / 1000:+.2f} "
+                           f"up={int(f[12]) / 1000:+.2f} встряска={int(f[13]) / 1000:.2f} м/с²")
                 print(f"NGD #{f[2]} t={f[3]} курс={int(f[4]) / 1000:+.2f}° "
                       f"поворот={int(f[5]) / 1000:+.2f}°/с скорость={f[7]} "
-                      f"[{' '.join(names)}] {rate:.1f}/с")
+                      f"[{' '.join(names)}] {rate:.1f}/с{acc}")
                 last_print = now
         else:
             print(text.strip())

@@ -34,6 +34,7 @@
 #define ACCEL_MAX       10.3f
 #define MOUNT_DEG       8.0f        // 7.5
 #define MOUNT_STOPS     3
+#define G_MMS2          9810        // вычитается из ускорения вдоль «вверх» (поле 13 NGD)
 #define CMD_STALL_US    1000000     // команда без отсчётов IMU — ERR,IMU
 // Калибровка по команде: вибрация допустима, она в среднем ноль. Движение видно по тому, что средние
 // за части замера расходятся: ускорение меняет направление (разгон, поворот), гироскоп — среднее.
@@ -74,6 +75,12 @@ static int64_t s_prev_t;
 static double  s_dist_mm;
 static double  s_rate_sum;
 static int     s_rate_n;
+// Ускорения в осях машины за интервал между публикациями: суммы вдоль h1, h2 и «вверх», крайние
+// значения вдоль «вверх».
+static float   s_h1[3], s_h2[3];
+static double  s_acc_sum[3];
+static int     s_acc_n;
+static float   s_acc_up_min, s_acc_up_max;
 static int64_t s_bias_t_us = -1;
 static float   s_shake_gyro, s_shake_acc;
 
@@ -104,6 +111,9 @@ static struct {
     double       yaw_deg;
     double       rate_sum;
     int          rate_n;
+    double       acc_sum[3];
+    int          acc_n;
+    float        acc_up_min, acc_up_max;
     double       dist_mm;
     int64_t      t_us;
     uint32_t     flags;
@@ -202,6 +212,27 @@ static bool quiet(const stats_t *s)
 static float up_dps(const float *v)
 {
     return dot3(v, s_up) * RAD2DEG;
+}
+
+// Две горизонтальные оси, перпендикулярные вертикали и друг другу. Они однозначно получаются из
+// сохранённой вертикали, поэтому не меняются между включениями, пока не повторили CAL_UP: h1 — проекция
+// на горизонт той оси датчика, что дальше всего от вертикали, h2 = up × h1.
+static void update_horizon(void)
+{
+    const float *up = s_cal.up;
+    int k = 0;
+    for (int i = 1; i < 3; i++) {
+        if (fabsf(up[i]) < fabsf(up[k])) {
+            k = i;
+        }
+    }
+    for (int i = 0; i < 3; i++) {
+        s_h1[i] = (i == k ? 1.0f : 0.0f) - up[k] * up[i];
+    }
+    normalize3(s_h1);
+    s_h2[0] = up[1] * s_h1[2] - up[2] * s_h1[1];
+    s_h2[1] = up[2] * s_h1[0] - up[0] * s_h1[2];
+    s_h2[2] = up[0] * s_h1[1] - up[1] * s_h1[0];
 }
 
 // ---- сохранение и ответы ----
@@ -528,6 +559,7 @@ static void cmd_finish(const imu_sample_t *x)
         s_mount_moved = false;
         s_mount_count = 0;
         memcpy(s_up, s_cal.up, sizeof(s_up));
+        update_horizon();
         events_add('I', "CAL_UP_OK", "%s up %.3f %.3f %.3f",
                    s_cmd.cmd == MOTION_CMD_CAL_UP ? "1" : "2", s_cal.up[0], s_cal.up[1], s_cal.up[2]);
     }
@@ -632,6 +664,21 @@ void motion_on_samples(const imu_sample_t *s, int n, void *ctx)
         s_rate_sum += rate * RAD2DEG;
         s_rate_n++;
 
+        // Ускорения в осях машины — по каждому отсчёту: встряска на рельсах короче интервала пакета.
+        if (s_cal.up_ok) {
+            float au = dot3(x->accel, s_cal.up);
+            s_acc_sum[0] += dot3(x->accel, s_h1);
+            s_acc_sum[1] += dot3(x->accel, s_h2);
+            s_acc_sum[2] += au;
+            if (s_acc_n == 0 || au < s_acc_up_min) {
+                s_acc_up_min = au;
+            }
+            if (s_acc_n == 0 || au > s_acc_up_max) {
+                s_acc_up_max = au;
+            }
+            s_acc_n++;
+        }
+
         if (s_block.n == 0) {
             s_block_t0 = x->t_us;
         }
@@ -654,6 +701,18 @@ void motion_on_samples(const imu_sample_t *s, int n, void *ctx)
     s_pub.yaw_deg = s_yaw_deg;
     s_pub.rate_sum += s_rate_sum;
     s_pub.rate_n += s_rate_n;
+    if (s_acc_n) {
+        if (s_pub.acc_n == 0 || s_acc_up_min < s_pub.acc_up_min) {
+            s_pub.acc_up_min = s_acc_up_min;
+        }
+        if (s_pub.acc_n == 0 || s_acc_up_max > s_pub.acc_up_max) {
+            s_pub.acc_up_max = s_acc_up_max;
+        }
+        for (int k = 0; k < 3; k++) {
+            s_pub.acc_sum[k] += s_acc_sum[k];
+        }
+        s_pub.acc_n += s_acc_n;
+    }
     s_pub.dist_mm = s_dist_mm;
     s_pub.t_us = s[n - 1].t_us;
     s_pub.flags = flags;
@@ -666,6 +725,8 @@ void motion_on_samples(const imu_sample_t *s, int n, void *ctx)
     taskEXIT_CRITICAL(&s_lock);
     s_rate_sum = 0;
     s_rate_n = 0;
+    s_acc_sum[0] = s_acc_sum[1] = s_acc_sum[2] = 0;
+    s_acc_n = 0;
 }
 
 // ---- снаружи ----
@@ -676,6 +737,7 @@ esp_err_t motion_init(void)
     if (s_cal.up_ok) {
         memcpy(s_up, s_cal.up, sizeof(s_up));
         s_up_set = true;
+        update_horizon();
     }
     ESP_LOGI(TAG, "калибровка из NVS: вертикаль %s, смещение %s",
              s_cal.up_ok ? "есть" : "нет", s_cal.bias_ok ? "есть" : "нет");
@@ -707,6 +769,17 @@ void motion_take_packet(motion_packet_t *out)
     double rate = s_pub.rate_n ? s_pub.rate_sum / s_pub.rate_n : 0;
     s_pub.rate_sum = 0;
     s_pub.rate_n = 0;
+    out->has_acc = s_pub.acc_n > 0;
+    if (out->has_acc) {
+        double up = s_pub.acc_sum[2] / s_pub.acc_n;
+        double jolt = fmax(s_pub.acc_up_max - up, up - s_pub.acc_up_min);
+        out->acc_h1_mms2 = (int32_t)lround(s_pub.acc_sum[0] / s_pub.acc_n * 1000);
+        out->acc_h2_mms2 = (int32_t)lround(s_pub.acc_sum[1] / s_pub.acc_n * 1000);
+        out->acc_up_mms2 = (int32_t)lround(up * 1000) - G_MMS2;
+        out->jolt_mms2 = (int32_t)lround(jolt * 1000);
+    }
+    s_pub.acc_sum[0] = s_pub.acc_sum[1] = s_pub.acc_sum[2] = 0;
+    s_pub.acc_n = 0;
     out->yaw_mdeg = llround(s_pub.yaw_deg * 1000);
     out->rate_mdps = (int32_t)lround(rate * 1000);
     out->dist_mm = (uint64_t)s_pub.dist_mm;

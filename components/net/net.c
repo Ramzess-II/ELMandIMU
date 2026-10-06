@@ -113,10 +113,17 @@ static void send_ngd(void)
 {
     motion_packet_t p;
     motion_take_packet(&p);
-    int len = proto_line(s_out, sizeof(s_out), "NGD,%d,%lu,%lu,%lld,%ld,%llu,%d,%d,%lX",
+    uint32_t flags = full_flags(p.flags);
+    // Поля 11–14 — ускорения; пустые без откалиброванной вертикали или без гироскопа.
+    char acc[64] = ",,,";
+    if (p.has_acc && (flags & FLAG_IMU_OK) && (flags & MOTION_UP_OK)) {
+        snprintf(acc, sizeof(acc), "%ld,%ld,%ld,%ld", (long)p.acc_h1_mms2, (long)p.acc_h2_mms2,
+                 (long)p.acc_up_mms2, (long)p.jolt_mms2);
+    }
+    int len = proto_line(s_out, sizeof(s_out), "NGD,%d,%lu,%lu,%lld,%ld,%llu,%d,%d,%lX,%s",
                          PROTO_VERSION, (unsigned long)s_seq++, (unsigned long)p.t_ms,
                          (long long)p.yaw_mdeg, (long)p.rate_mdps, (unsigned long long)p.dist_mm,
-                         p.speed_kmh, p.speed_age_ms, (unsigned long)full_flags(p.flags));
+                         p.speed_kmh, p.speed_age_ms, (unsigned long)flags, acc);
     send_to(&s_peer, len);
 }
 

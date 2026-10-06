@@ -87,3 +87,5 @@ sdkconfig.c3.old
 
 # Записывает чип последней сборки и меняется при каждом переключении S3/C3
 dependencies.lock
+sdkconfig.s3
+sdkconfig.s3.old
