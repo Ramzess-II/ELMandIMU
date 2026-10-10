@@ -50,7 +50,7 @@ typedef struct {
 } cal_t;
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
-static power_status_t s_st = {.wifi = true, .adc_mv = -1, .k_milli = 1000};
+static power_status_t s_st = {.radio = true, .adc_mv = -1, .k_milli = 1000};
 
 static adc_oneshot_unit_handle_t s_adc;
 static adc_cali_handle_t s_cali;
@@ -192,7 +192,7 @@ static void power_task(void *arg)
         ESP_LOGI(TAG, "делитель: коэффициент %.3f (%s)", s_k, k_src == CAL_ECU ? "по машине" : "по ELM327");
     }
 
-    bool parked = false, wifi = true;
+    bool parked = false, radio = true;
     bool verified = false, mismatch_reported = false, untrusted_logged = false, low_reported = false;
     int64_t keep_until = 0, parked_since = 0, mismatch_since = 0, low_since = 0, last_save = 0;
     uint32_t ref_seq = 0;
@@ -260,32 +260,33 @@ static void power_task(void *arg)
         }
 
         // Двигатель — только по машине. Узнать не у кого (OBD выключен, адаптер не найден или ещё
-        // ищется) — Wi-Fi не выключаем: блок должен работать и без ELM327.
+        // ищется) — радио не выключаем: блок должен работать и без ELM327.
         bool no_source = obd.state == OBD_STATE_DISABLED || obd.state == OBD_STATE_NO_ADAPTER ||
                          obd.state == OBD_STATE_INIT;
         bool running = obd.engine == OBD_ENGINE_RUN;
         obd_engine_t engine = running ? OBD_ENGINE_RUN : no_source ? OBD_ENGINE_UNKNOWN : OBD_ENGINE_OFF;
 
         if (!parked) {
-            // Работа. Wi-Fi держится первую минуту после старта и минуту после остановки двигателя.
+            // Работа. Радио держится первую минуту после старта и минуту после остановки двигателя.
             // Прошивка после обновления ещё не подтверждена — тоже держим: к ней должен успеть
             // подключиться телефон.
             if (keep_until == 0 || running || no_source || update_hold_awake()) {
                 keep_until = now + (int64_t)off_s * 1000000;
             }
             bool want = off_s == 0 || now < keep_until;
-            if (want != wifi) {
-                wifi = want;
+            if (want != radio) {
+                radio = want;
+                // Имена событий остались от Wi-Fi: на них написаны журналы и разборщики.
                 events_add('I', want ? "WIFI_ON" : "WIFI_OFF", "%s rpm %d %d mV",
                            want ? "engine on" : "engine off", obd.rpm, v);
             }
-            if (!wifi && !trusted && !untrusted_logged) {
+            if (!radio && !trusted && !untrusted_logged) {
                 untrusted_logged = true;
                 ESP_LOGW(TAG, "делитель напряжения не подтверждён — на стоянку и в сон не ухожу, "
                               "жду двигатель по опросу машины");
             }
             // На стоянку — только если есть чем проснуться. Уровень засыпания — в памяти.
-            if (!wifi && trusted) {
+            if (!radio && trusted) {
                 parked = true;
                 parked_since = now;
                 base = v;
@@ -314,7 +315,7 @@ static void power_task(void *arg)
             }
             if (why) {
                 parked = false;
-                wifi = true;
+                radio = true;
                 keep_until = now + (int64_t)off_s * 1000000;
                 obd_set_paused(false);
                 events_add('I', "WIFI_ON", "%s %d mV", why, v);
@@ -338,7 +339,7 @@ static void power_task(void *arg)
 
         taskENTER_CRITICAL(&s_lock);
         s_st.parked = parked;
-        s_st.wifi = wifi;
+        s_st.radio = radio;
         s_st.engine = engine;
         s_st.adc_mv = v;
         s_st.k_milli = k_milli;

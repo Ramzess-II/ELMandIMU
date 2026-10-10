@@ -51,21 +51,20 @@ static void init_nvs(void)
     ESP_ERROR_CHECK(err);
 }
 
-// Экономия на стоянке — компонент power: он решает, нужно ли радио (Wi-Fi и Bluetooth), здесь решение
-// только исполняется.
-static bool s_wifi = true;
+// Экономия на стоянке — компонент power: он решает, нужно ли радио, здесь решение только исполняется.
+static bool s_radio = true;
 
 static void update_power(void)
 {
     power_status_t pw;
     power_get_status(&pw);
-    if (pw.wifi != s_wifi) {
-        s_wifi = pw.wifi;
-        if (s_wifi) {
+    if (pw.radio != s_radio) {
+        s_radio = pw.radio;
+        if (s_radio) {
             power_radio_state(true);
         }
-        net_set_radio(s_wifi);
-        if (!s_wifi) {
+        net_set_radio(s_radio);
+        if (!s_radio) {
             power_radio_state(false);
         }
     }
@@ -105,7 +104,7 @@ static void update_firmware_state(void)
 // Раздел 11: если ошибок несколько, показывается первая по таблице.
 static void update_led(void)
 {
-    if (!s_wifi) {
+    if (!s_radio) {
         led_set(LED_OFF, 0);
         return;
     }
@@ -127,7 +126,8 @@ static void update_led(void)
     } else if (mo.flags & MOTION_MOUNT_MOVED) {
         blinks = 4;
     }
-    led_base_t base = !net.wifi_up || net.wifi_error ? LED_FAST : net.phone ? LED_ON : LED_IDLE;
+    // Часто мигает, пока блок не виден телефону: Bluetooth запускается или не запустился.
+    led_base_t base = net.phone ? LED_ON : net.bt_adv || net.bt_conn ? LED_IDLE : LED_FAST;
     led_set(base, base == LED_FAST ? 0 : blinks);
 }
 
@@ -160,12 +160,14 @@ static void log_status(void)
                                                                                      : "неизвестно",
              obd.rpm, pw.adc_mv, pw.adc_trusted ? "подтверждён" : "не подтверждён", pw.k_milli,
              obd.voltage_mv, obd.ecu_mv, pw.parked ? "стоянка" : "работа", pw.base_mv,
-             s_wifi ? "включено" : "выключено");
-    ESP_LOGI(TAG, "Bluetooth %s | привязано телефонов %d%s",
+             s_radio ? "включено" : "выключено");
+    ESP_LOGI(TAG, "Bluetooth %s | привязано телефонов %d%s | память: свободно %lu КБ, меньше всего было %lu КБ",
              !net.bt_up ? "выключен" : net.bt_link ? "телефон подключён"
                         : net.bt_conn ? "телефон подключается, связь ещё не зашифрована"
                         : net.bt_adv ? "реклама идёт, ждёт телефон" : "РЕКЛАМЫ НЕТ",
-             net.bt_bonds, net.bt_pairing ? " | ОКНО СОПРЯЖЕНИЯ ОТКРЫТО" : "");
+             net.bt_bonds, net.bt_pairing ? " | ОКНО СОПРЯЖЕНИЯ ОТКРЫТО" : "",
+             (unsigned long)(esp_get_free_heap_size() / 1024),
+             (unsigned long)(esp_get_minimum_free_heap_size() / 1024));
 }
 
 #if CONFIG_NOGPS_TEST_FLASH_STRESS
@@ -216,8 +218,7 @@ static void status_poll_task(void *arg)
 void app_main(void)
 {
     init_nvs();
-    cfg_init(CONFIG_NOGPS_WIFI_PASS, CONFIG_NOGPS_BT_PIN, CONFIG_NOGPS_IMU_ODR,
-             esp_reset_reason() == ESP_RST_POWERON);
+    cfg_init(CONFIG_NOGPS_BT_PIN, CONFIG_NOGPS_IMU_ODR, esp_reset_reason() == ESP_RST_POWERON);
     const char *fw = esp_app_get_description()->version;
     events_add('I', "BOOT", "fw %s reset %s", fw, reset_reason());
     ESP_LOGI(TAG, "включений питанием: %lu", (unsigned long)cfg_power_ons());
@@ -252,7 +253,7 @@ void app_main(void)
         obd_start(motion_set_speed);
     }
     if (net_start(fw) != ESP_OK) {
-        ESP_LOGE(TAG, "сеть не запустилась");
+        ESP_LOGE(TAG, "связь с телефоном не запустилась");
     }
     if (power_start() != ESP_OK) {
         ESP_LOGE(TAG, "контроль питания не запустился");

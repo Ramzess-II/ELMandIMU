@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Проверка блока NoGPS по Bluetooth LE с ноутбука — то же, что nogps_client.py, но без Wi-Fi.
+"""Проверка блока NoGPS с ноутбука по Bluetooth LE (ТЗ, раздел 13).
 
 Ищет блок по UUID сервиса, подключается, шлёт HELLO раз в секунду и печатает строки блока.
-Команды вводятся с клавиатуры: STATUS, INFO, CAL_UP, EVENTS,1, BT_PAIR, BT_FORGET, SET,bt_pin,654321 …
+Команды вводятся с клавиатуры:
+  CAL_UP, CAL_BIAS, CAL_RESET, STATUS, INFO, EVENTS,1, IMU_TEST, SET,data_hz,20, SET,bt_pin,654321,
+  REBOOT, BT_PAIR (на 2 минуты разрешить привязку ещё одного телефона), BT_FORGET
 По умолчанию NGD печатается раз в секунду, ключ --all печатает все.
 
     pip install bleak
@@ -16,8 +18,7 @@
 Перед первым подключением ноутбук надо привязать к блоку средствами системы (Windows: Параметры →
 Bluetooth → Добавить устройство; Linux: bluetoothctl pair). Система спросит код из шести цифр — это
 настройка bt_pin, по умолчанию 123456. Блок принимает новую привязку только в «окне сопряжения»:
-первые 2 минуты после подачи питания или после команды BT_PAIR, посланной по Wi-Fi либо с уже
-привязанного телефона.
+первые 2 минуты после подачи питания или после команды BT_PAIR с уже привязанного телефона.
 """
 import argparse
 import asyncio
@@ -30,12 +31,40 @@ import time
 
 from bleak import BleakClient, BleakScanner
 
-from nogps_client import FLAGS, line, parse
-
 SVC = "02cb0001-c0c3-40d0-819c-5a85998dcd99"
 TX = "02cb0002-c0c3-40d0-819c-5a85998dcd99"
 RX = "02cb0003-c0c3-40d0-819c-5a85998dcd99"
 OTA = "02cb0004-c0c3-40d0-819c-5a85998dcd99"
+
+FLAGS = ["IMU_OK", "BIAS_OK", "UP_OK", "FWD_OK", "OBD_OK", "STILL", "CALIBRATING",
+         "MOUNT_MOVED", "REVERSE", "OBD_ABSENT", "ERROR"]
+
+
+def crc16(text: str) -> int:
+    crc = 0xFFFF
+    for b in text.encode("ascii"):
+        crc ^= b << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (crc << 1) & 0xFFFF
+    return crc
+
+
+def line(body: str) -> bytes:
+    return f"${body}*{crc16(body):04X}\r\n".encode("ascii")
+
+
+def parse(raw: str):
+    raw = raw.strip()
+    star = raw.rfind("*")
+    if not raw.startswith("$") or star < 0 or len(raw) != star + 5:
+        return None
+    body = raw[1:star]
+    try:
+        if int(raw[star + 1:], 16) != crc16(body):
+            return None
+    except ValueError:
+        return None
+    return body.split(",")
 
 
 async def find(name):
@@ -98,8 +127,12 @@ class Link:
         flags = int(f[9], 16)
         names = [n for i, n in enumerate(FLAGS) if flags >> i & 1]
         rate = self.ngd / (now - self.t0) if now > self.t0 else 0
+        acc = ""
+        if len(f) >= 14 and f[10] != "":
+            acc = (f" ускорение h1={int(f[10]) / 1000:+.2f} h2={int(f[11]) / 1000:+.2f} "
+                   f"up={int(f[12]) / 1000:+.2f} встряска={int(f[13]) / 1000:.2f} м/с²")
         print(f"NGD #{f[2]} t={f[3]} курс={int(f[4]) / 1000:+.2f}° поворот={int(f[5]) / 1000:+.2f}°/с "
-              f"скорость={f[7]} [{' '.join(names)}] {rate:.1f}/с")
+              f"скорость={f[7]} [{' '.join(names)}] {rate:.1f}/с{acc}")
 
     async def send(self, cmd, response=True):
         self.seq += 1

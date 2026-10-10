@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 # Версия прошивки: попадает в описание образа, в строки NGS и NGI и в имя файла выпуска.
-set(PROJECT_VER "0.3.6")
+set(PROJECT_VER "0.4.0")
 
 # Прошивка подписывается (sdkconfig.defaults). Ключа в репозитории нет: у каждого он свой.
 if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/keys/nogps_signing_key.pem")

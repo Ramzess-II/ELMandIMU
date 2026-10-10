@@ -4,8 +4,7 @@ menu "NoGPS питание"
         int "GPIO делителя напряжения бортовой сети (-1 — делителя нет)"
         default 1
         help
-            Только ADC1: у ESP32-S3 это GPIO1–GPIO10, у ESP32-C3 — GPIO0–GPIO4. ADC2 не работает
-            вместе с Wi-Fi.
+            Только ADC1: у ESP32-S3 это GPIO1–GPIO10, у ESP32-C3 — GPIO0–GPIO4.
             Схема: +12 В — верхнее плечо — GPIO — нижнее плечо — GND, параллельно нижнему 100 нФ.
 
     config NOGPS_VBAT_R_TOP

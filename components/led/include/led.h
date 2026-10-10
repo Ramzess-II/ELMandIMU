@@ -9,7 +9,7 @@ extern "C" {
 
 typedef enum {
     LED_OFF,
-    LED_FAST,   // 5 раз в секунду: Wi-Fi поднимается или ошибка Wi-Fi
+    LED_FAST,   // 5 раз в секунду: Bluetooth запускается или не запустился
     LED_IDLE,   // 0.1 с горит, 0.9 с нет: ждём телефон
     LED_ON,     // горит: телефон подключён
 } led_base_t;

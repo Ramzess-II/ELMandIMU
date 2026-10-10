@@ -27,9 +27,6 @@ typedef struct {
 } item_t;
 
 static item_t s_items[] = {
-    {"wifi_mode",     "ap",   T_STR,   2, 3,       false, "", 0},
-    {"wifi_ssid",     "",     T_STR,   0, 32,      false, "", 0},  // пусто — NoGPS-XXXX
-    {"wifi_pass",     NULL,   T_STR,   8, 63,      false, "", 0},
     // Код, который телефон спрашивает при сопряжении по Bluetooth: ровно 6 цифр.
     {"bt_pin",        NULL,   T_STR,   6, 6,       true, "", 0},
     {"imu_driver",    "auto", T_STR,   1, 31,      false, "", 0},
@@ -41,11 +38,11 @@ static item_t s_items[] = {
     {"obd_enabled",   "1",    T_INT,   0, 1,       false, "", 0},
     {"obd_baud",      "0",    T_INT,   0, 2000000, false, "", 0},
     {"obd_proto",     "0",    T_INT,   0, 12,      false, "", 0},
-    // 1 — плата для проверки на столе: вместо ELM327 скорость по синусу, а обновление прошивки
-    // принимается и по Wi-Fi. В машине должно быть 0.
+    // 1 — плата для проверки на столе: вместо ELM327 скорость по синусу. В машине должно быть 0.
     {"bench",         "0",    T_INT,   0, 1,       false, "", 0},
     {"data_hz",       "50",   T_INT,   10, 100,    true, "", 0},
-    // Экономия на стоянке: через сколько секунд после остановки двигателя выключить Wi-Fi; 0 — никогда.
+    // Экономия на стоянке: через сколько секунд после остановки двигателя выключить радио; 0 — никогда.
+    // Имя осталось от Wi-Fi: на нём написаны журналы и разборщики.
     {"wifi_off_s",    "60",   T_INT,   0, 3600,    true, "", 0},
     // Через сколько секунд после остановки двигателя усыпить ESP32 и гироскоп (блок просыпается раз
     // в 2 с измерить напряжение); 0 — не усыплять.
@@ -72,9 +69,6 @@ static bool valid(const item_t *it, const char *v, float *num)
     if (it->type == T_STR) {
         if (len < it->min || len > it->max) {
             return false;
-        }
-        if (strcmp(it->key, "wifi_mode") == 0) {
-            return strcmp(v, "ap") == 0 || strcmp(v, "sta") == 0;
         }
         if (strcmp(it->key, "bt_pin") == 0) {
             return strspn(v, "0123456789") == len;
@@ -119,13 +113,11 @@ uint32_t cfg_power_ons(void)
     return s_power_ons;
 }
 
-void cfg_init(const char *default_wifi_pass, const char *default_bt_pin, int default_imu_odr,
-              bool power_on)
+void cfg_init(const char *default_bt_pin, int default_imu_odr, bool power_on)
 {
     count_power_on(power_on);
     static char odr[12];
     snprintf(odr, sizeof(odr), "%d", default_imu_odr);
-    find("wifi_pass")->def = default_wifi_pass;
     find("bt_pin")->def = default_bt_pin;
     find("imu_odr")->def = odr;
 

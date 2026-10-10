@@ -5,10 +5,6 @@ menu "NoGPS"
         default "c3supermini" if IDF_TARGET_ESP32C3
         default "s3zero"
 
-    config NOGPS_WIFI_PASS
-        string "Пароль Wi-Fi по умолчанию (8–63 символа, меняется командой SET)"
-        default "12345678"
-
     config NOGPS_BT_PIN
         string "Код сопряжения Bluetooth по умолчанию (6 цифр, меняется командой SET)"
         default "123456"
