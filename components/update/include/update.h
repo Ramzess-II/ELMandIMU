@@ -59,17 +59,18 @@ bool update_hold_awake(void);
 // ---- приём новой прошивки ----
 
 // Начать приём. size и sha256_hex — от файла .bin как он есть, вместе с блоком подписи.
+// imu_found запоминается: новая прошивка должна будет найти гироскоп, если он найден сейчас. Спрашивать
+// позже нельзя: на время приёма гироскоп усыпляется.
 // NULL — принято; иначе код ошибки: BUSY, SIZE, VALUE, PENDING, UNSUPPORTED, WRITE.
-const char *update_begin(uint32_t size, const char *sha256_hex, const char *version);
+const char *update_begin(uint32_t size, const char *sha256_hex, const char *version, bool imu_found);
 
 // Кусок из характеристики OTA: смещение (uint32, младший байт первым) и данные. Зовётся из задачи
 // стека Bluetooth, только складывает кусок в очередь.
 void update_chunk(const uint8_t *msg, size_t len);
 
 // Всё передано: проверить и выбрать раздел. Итог придёт в update_get_progress (DONE или ERROR).
-// imu_ok запоминается: новая прошивка должна будет найти гироскоп, если он найден сейчас.
 // NULL — проверка началась; иначе код ошибки STATE.
-const char *update_end(bool imu_ok);
+const char *update_end(void);
 
 // Отменить. err == NULL — по команде телефона (ABORTED), иначе ошибка с этим кодом.
 void update_abort(const char *err);
@@ -77,6 +78,8 @@ void update_abort(const char *err);
 // Состояние приёма. Признак resend при чтении сбрасывается.
 void update_get_progress(update_progress_t *out);
 bool update_active(void);
+// true, пока прошивка пишется во флеш и после удачного приёма, до перезагрузки.
+bool update_writing(void);
 
 #ifdef __cplusplus
 }

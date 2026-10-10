@@ -4,4 +4,4 @@ idf_component_register(SRCS "imu.c"
                             "drivers/imu_icm20602.c"
                        INCLUDE_DIRS "include"
                        PRIV_INCLUDE_DIRS "."
-                       PRIV_REQUIRES esp_driver_i2c esp_timer events)
+                       PRIV_REQUIRES esp_driver_i2c esp_driver_gpio esp_timer events)

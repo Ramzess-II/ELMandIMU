@@ -71,6 +71,7 @@ typedef struct {
     int         odr_hz;     // частота по настройке датчика
     float       odr_measured_hz;  // фактическая частота за последнюю секунду
     uint32_t    errors;     // ошибок чтения с включения
+    bool        stalled;    // задача гироскопа перестала работать; state при этом NO_DATA
 } imu_status_t;
 
 // Вызывается из imu_task на каждую пачку отсчётов. Должен работать быстро.
@@ -83,6 +84,8 @@ const char *imu_state_name(imu_state_t s);
 
 // Усыпить датчик на время сна блока или разбудить: после пробуждения — заново автоопределение.
 void imu_set_suspended(bool suspended);
+// То же на время приёма новой прошивки: запись во флеш почти не оставляет времени на обмен с датчиком.
+void imu_set_paused(bool paused);
 
 #ifdef __cplusplus
 }

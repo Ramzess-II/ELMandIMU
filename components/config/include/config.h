@@ -2,6 +2,9 @@
 // config_: имя config_get_int занято в библиотеке Bluetooth из ESP-IDF.
 #pragma once
 
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "esp_err.h"
 
 #ifdef __cplusplus
@@ -12,7 +15,13 @@ extern "C" {
 
 // Прочитать настройки из NVS. NVS уже инициализирован.
 // Значения по умолчанию для пароля, кода сопряжения и частоты IMU берутся из сборки.
-void cfg_init(const char *default_wifi_pass, const char *default_bt_pin, int default_imu_odr);
+// power_on — блок только что включили питанием: счётчик включений увеличивается и пишется в NVS.
+void cfg_init(const char *default_wifi_pass, const char *default_bt_pin, int default_imu_odr,
+              bool power_on);
+
+// Сколько раз блок включали питанием (вынимали из разъёма и вставляли). Перезагрузки не считаются.
+// По этому числу приложение узнаёт, что блок могли переставить и нужна калибровка.
+uint32_t cfg_power_ons(void);
 
 // Текущие значения. Настройки «сразу» меняются командой SET на ходу, остальные — после перезагрузки.
 const char *cfg_get_str(const char *key);

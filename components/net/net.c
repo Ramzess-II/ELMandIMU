@@ -345,10 +345,11 @@ static void send_ngi(const peer_t *to)
     update_get_info(&u);
     uint32_t flash = 0;
     esp_flash_get_size(NULL, &flash);
-    send_to(to, proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s",
+    send_to(to, proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s,%lu",
                            PROTO_VERSION, u.version, u.build, CONFIG_IDF_TARGET, CONFIG_NOGPS_BOARD,
                            s_id, (unsigned long)(flash / 1024), (unsigned long)u.max_image, u.slot,
-                           u.slot_state, u.can_update ? "WIFI BLE OTA" : "WIFI BLE"));
+                           u.slot_state, u.can_update ? "WIFI BLE OTA" : "WIFI BLE",
+                           (unsigned long)cfg_power_ons()));
 }
 
 // ---- обновление прошивки (раздел 18) ----
@@ -372,7 +373,12 @@ static void ota_begin(char **f, int n, const peer_t *from, int seq)
     } else if (mv >= 0 && mv < OTA_MIN_MV) {
         err = "LOW_VOLTAGE";    // напряжение неизвестно — не мешаем
     } else {
-        err = update_begin(strtoul(f[3], NULL, 10), f[4], f[5]);
+        // Гироскоп найден, если микросхема опознана — пусть даже в эту секунду обмен с ней сорвался.
+        imu_status_t imu;
+        imu_get_status(&imu);
+        bool imu_found = imu.state == IMU_STATE_OK || imu.state == IMU_STATE_BUS_ERROR ||
+                         imu.state == IMU_STATE_NO_DATA;
+        err = update_begin(strtoul(f[3], NULL, 10), f[4], f[5], imu_found);
     }
     char r[40];
     if (err) {
@@ -565,9 +571,7 @@ static void handle_cmd(char **f, int n, const peer_t *from, int64_t now)
     } else if (strcmp(cmd, "OTA_BEGIN") == 0) {
         ota_begin(f, n, from, seq);
     } else if (strcmp(cmd, "OTA_END") == 0) {
-        imu_status_t imu;
-        imu_get_status(&imu);
-        const char *err = update_end(imu.state == IMU_STATE_OK);
+        const char *err = update_end();
         if (err) {
             char r[24];
             snprintf(r, sizeof(r), "ERR,%s", err);

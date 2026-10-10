@@ -15,10 +15,18 @@
 #define TAG "imu"
 
 #define READ_PERIOD_MS     10
-#define NO_DATA_TIMEOUT_US 100000   // IMU-11
+#define FAIL_HOLD_US       100000   // IMU-11: ошибка шины или тишина должны продержаться 100 мс
+#define FAIL_MIN_READS     3        // и не меньше трёх чтений подряд
 #define REDETECT_MS        2000     // IMU-9
 #define REINIT_MS          1000     // IMU-11
 #define SLOW_ODR_HZ        150      // IMU-12
+// Задача гироскопа проходит цикл раз в 10 мс. Если состояние OK, а она стоит дольше этого, отсчётов
+// нет и курс не считается: наружу это должно быть видно.
+#define STALL_MS           500
+// Сразу после включения и после сна датчик может ещё не отвечать, а Wi-Fi и Bluetooth при запуске
+// пишут во флеш и задерживают обмен. Первые неудачи — без события, с быстрым повтором.
+#define START_TRIES        3
+#define START_RETRY_MS     200
 #define BATCH_MAX          64
 // На двухъядерных чипах — ядро 1, отдельно от Wi-Fi; на одноядерных (ESP32-C3) — единственное.
 #define IMU_CORE           (portNUM_PROCESSORS - 1)
@@ -31,6 +39,13 @@ static imu_status_t s_status = {.state = IMU_STATE_INIT, .chip_id = -1};
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static imu_sample_t s_batch[BATCH_MAX];
 static volatile bool s_suspended;
+static volatile bool s_paused;
+static volatile uint32_t s_alive_ms;    // когда imu_task последний раз прошла цикл
+
+static uint32_t now_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000);
+}
 
 const char *imu_state_name(imu_state_t s)
 {
@@ -50,6 +65,15 @@ void imu_get_status(imu_status_t *out)
     taskENTER_CRITICAL(&s_lock);
     *out = s_status;
     taskEXIT_CRITICAL(&s_lock);
+    // Метка читается до часов и ещё раз после. Того, кто спрашивает, могут вытеснить между чтениями:
+    // метка, обновлённая за это время, оказалась бы новее часов, и разность без знака стала бы
+    // огромной. Так в 0.3.5 появлялось ложное «задача стоит».
+    uint32_t alive = s_alive_ms;
+    uint32_t now = now_ms();
+    out->stalled = out->state == IMU_STATE_OK && alive == s_alive_ms && (int32_t)(now - alive) > STALL_MS;
+    if (out->stalled) {
+        out->state = IMU_STATE_NO_DATA;
+    }
 }
 
 // Смена состояния — событие для журнала (ТЗ, раздел 10). Повторы того же состояния не пишутся.
@@ -107,6 +131,9 @@ static imu_state_t detect(void)
         if (s_cfg.bus.i2c_addr && a != s_cfg.bus.i2c_addr) {
             continue;
         }
+        // Без сброса перед каждым адресом драйвер I²C отдаёт ему ответ предыдущего: в списке
+        // появлялись адреса, на которых никого нет, каждый раз разные.
+        imu_bus_reset();
         if (imu_bus_probe(a)) {
             acked[a] = true;
             n_acked++;
@@ -128,9 +155,12 @@ static imu_state_t detect(void)
         }
     }
 
+    // Список выше — для лога. WHO_AM_I читается на каждом адресе драйверов, что бы перебор ни показал:
+    // пропущенный в нём датчик иначе нашёлся бы только через 2 с.
+    imu_bus_reset();
     int wrong_id = -1;
     for (int a = 0x08; a <= 0x77; a++) {
-        if (!acked[a]) {
+        if (s_cfg.bus.i2c_addr && a != s_cfg.bus.i2c_addr) {
             continue;
         }
         // Каждый регистр WHO_AM_I читается на адресе один раз: читать чужие регистры у спящего
@@ -196,62 +226,90 @@ static void count_error(void)
 
 static void imu_task(void *arg)
 {
-    int64_t last_data_us = 0;
     int64_t rate_t0 = 0;
     int rate_n = 0;
     bool slow = false;
+    int start_tries = START_TRIES;
+    // Чтения подряд без отсчётов: сколько их, когда началось и была ли среди них ошибка шины.
+    int bad_n = 0;
+    int64_t bad_since_us = 0;
+    bool bad_bus = false;
 
     for (;;) {
-        if (s_suspended) {
+        s_alive_ms = now_ms();
+        if (s_suspended || s_paused) {
             if (s_drv) {
                 s_drv->deinit();
                 s_drv = NULL;
                 imu_bus_detach();
                 set_state(IMU_STATE_INIT);
             }
+            start_tries = START_TRIES;
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
         // Поиск датчика: раз в 2 с, пока не найдётся.
         if (!s_drv) {
             imu_state_t found = detect();
-            if (!s_drv) {
+            bool up = s_drv && start_driver();
+            if (!up) {
+                if (s_drv) {
+                    count_error();
+                    found = IMU_STATE_BUS_ERROR;
+                    s_drv = NULL;
+                    imu_bus_detach();
+                }
+                if (start_tries > 0) {
+                    start_tries--;
+                    vTaskDelay(pdMS_TO_TICKS(START_RETRY_MS));
+                    continue;
+                }
                 set_state(found);
-                vTaskDelay(pdMS_TO_TICKS(REDETECT_MS));
+                vTaskDelay(pdMS_TO_TICKS(found == IMU_STATE_BUS_ERROR ? REINIT_MS : REDETECT_MS));
                 continue;
             }
-            if (!start_driver()) {
-                count_error();
-                set_state(IMU_STATE_BUS_ERROR);
-                s_drv = NULL;
-                imu_bus_detach();
-                vTaskDelay(pdMS_TO_TICKS(REINIT_MS));
-                continue;
-            }
+            start_tries = 0;
+            // Поиск и запуск датчика могли занять больше STALL_MS: метка должна быть свежей раньше,
+            // чем состояние станет OK.
+            s_alive_ms = now_ms();
             set_state(IMU_STATE_OK);
-            last_data_us = rate_t0 = esp_timer_get_time();
+            rate_t0 = esp_timer_get_time();
             rate_n = 0;
+            bad_n = 0;
         }
 
         vTaskDelay(pdMS_TO_TICKS(READ_PERIOD_MS));
         int n = s_drv->read(s_batch, BATCH_MAX);
         int64_t now = esp_timer_get_time();
 
+        // IMU-11. Одно сорванное чтение — ещё не отказ: запись во флеш (настройки, калибровка,
+        // подтверждение прошивки) останавливает оба ядра на десятки миллисекунд.
         imu_state_t fail = IMU_STATE_OK;
-        if (n < 0) {
-            fail = IMU_STATE_BUS_ERROR;
-        } else if (n == 0 && now - last_data_us > NO_DATA_TIMEOUT_US) {
-            fail = IMU_STATE_NO_DATA;
+        if (n > 0) {
+            bad_n = 0;
+        } else {
+            if (bad_n++ == 0) {
+                bad_since_us = now;
+                bad_bus = false;
+            }
+            if (n < 0) {
+                count_error();
+                bad_bus = true;
+            }
+            if (bad_n >= FAIL_MIN_READS && now - bad_since_us > FAIL_HOLD_US) {
+                fail = bad_bus ? IMU_STATE_BUS_ERROR : IMU_STATE_NO_DATA;
+            }
         }
         if (fail != IMU_STATE_OK) {
             // Раз в секунду deinit + init. Если не поднялся — заново автоопределение.
-            count_error();
             set_state(fail);
             s_drv->deinit();
             vTaskDelay(pdMS_TO_TICKS(REINIT_MS));
+            bad_n = 0;
             if (start_driver()) {
+                s_alive_ms = now_ms();
                 set_state(IMU_STATE_OK);
-                last_data_us = rate_t0 = esp_timer_get_time();
+                rate_t0 = esp_timer_get_time();
                 rate_n = 0;
             } else {
                 s_drv = NULL;
@@ -261,7 +319,6 @@ static void imu_task(void *arg)
         }
 
         if (n > 0) {
-            last_data_us = now;
             rate_n += n;
             if (s_cb) {
                 s_cb(s_batch, n, s_cb_ctx);
@@ -287,6 +344,11 @@ static void imu_task(void *arg)
 void imu_set_suspended(bool suspended)
 {
     s_suspended = suspended;
+}
+
+void imu_set_paused(bool paused)
+{
+    s_paused = paused;
 }
 
 esp_err_t imu_start(const imu_config_t *cfg, imu_sample_cb_t cb, void *ctx)

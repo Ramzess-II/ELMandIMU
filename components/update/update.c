@@ -130,7 +130,7 @@ static uint8_t s_sha_want[32];
 static char s_version[32];
 static volatile bool s_end_req, s_abort_req;
 static char s_abort_err[12];
-static bool s_imu_ok;
+static bool s_imu_found;
 
 static void set_state(update_state_t st, const char *err)
 {
@@ -265,7 +265,7 @@ static void ota_task(void *arg)
                 err = e == ESP_ERR_OTA_VALIDATE_FAILED ? "SIGNATURE" : "WRITE";
                 break;
             }
-            save_imu_flag(s_imu_ok);
+            save_imu_flag(s_imu_found);
             done = true;
         } else if (now - last_data > DATA_TIMEOUT_US) {
             err = "TIMEOUT";
@@ -290,7 +290,7 @@ static void ota_task(void *arg)
     vTaskDelete(NULL);
 }
 
-const char *update_begin(uint32_t size, const char *sha256_hex, const char *version)
+const char *update_begin(uint32_t size, const char *sha256_hex, const char *version, bool imu_found)
 {
     if (!update_supported()) {
         return "UNSUPPORTED";
@@ -320,6 +320,7 @@ const char *update_begin(uint32_t size, const char *sha256_hex, const char *vers
         return e == ESP_ERR_OTA_ROLLBACK_INVALID_STATE ? "PENDING" : "WRITE";
     }
     strlcpy(s_version, version, sizeof(s_version));
+    s_imu_found = imu_found;
     s_end_req = s_abort_req = false;
     taskENTER_CRITICAL(&s_mux);
     memset(&s_prog, 0, sizeof(s_prog));
@@ -344,12 +345,11 @@ void update_chunk(const uint8_t *msg, size_t len)
     }
 }
 
-const char *update_end(bool imu_ok)
+const char *update_end(void)
 {
     if (get_state() != UPDATE_RECV) {
         return "STATE";
     }
-    s_imu_ok = imu_ok;
     s_end_req = true;
     return NULL;
 }
@@ -375,4 +375,9 @@ bool update_active(void)
 {
     update_state_t st = get_state();
     return st == UPDATE_RECV || st == UPDATE_VERIFY;
+}
+
+bool update_writing(void)
+{
+    return update_active() || get_state() == UPDATE_DONE;
 }

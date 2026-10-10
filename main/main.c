@@ -1,8 +1,11 @@
 // Блок датчиков NoGPS: запуск компонентов и светодиод состояния. Устройство прошивки — ТЗ, раздел 2.
 #include <stdio.h>
+#include <string.h>
 
 #include "esp_app_desc.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
+#include "esp_partition.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -69,7 +72,7 @@ static void update_power(void)
 }
 
 // Прошивка, пришедшая обновлением, подтверждает себя, когда к ней подключился телефон и гироскоп
-// на месте.
+// на месте. Пока принимается новая, гироскоп спит: машина стоит, а запись во флеш мешает его читать.
 static void update_firmware_state(void)
 {
     net_state_t net;
@@ -77,6 +80,26 @@ static void update_firmware_state(void)
     net_get_state(&net);
     imu_get_status(&imu);
     update_tick(net.phone, imu.state == IMU_STATE_OK);
+    imu_set_paused(update_writing());
+
+    // Задача гироскопа перестала работать. Такое было до версии 0.3.5: драйвер I²C зависал после
+    // сорванного обмена. Причина убрана, но если это повторится, в журнале должен остаться след:
+    // событие — после трёх опросов подряд, и ещё одно, если задача ожила.
+    static int stalled_polls;
+    static int64_t stalled_since;
+    if (imu.stalled) {
+        if (stalled_polls == 0) {
+            stalled_since = esp_timer_get_time();
+        }
+        if (++stalled_polls == 3) {
+            events_add('E', "IMU_HUNG", "%s", imu.name ? imu.name : "");
+        }
+    } else {
+        if (stalled_polls >= 3) {
+            events_add('W', "IMU_HUNG_END", "%d ms", (int)((esp_timer_get_time() - stalled_since) / 1000));
+        }
+        stalled_polls = 0;
+    }
 }
 
 // Раздел 11: если ошибок несколько, показывается первая по таблице.
@@ -116,9 +139,10 @@ static void log_status(void)
     imu_get_status(&imu);
     motion_get_status(&mo);
     net_get_state(&net);
-    ESP_LOGI(TAG, "IMU %s %.0f Гц | телефон %s | тряска %.2f °/с %.3f м/с² (пороги %.2f %.3f) | "
+    ESP_LOGI(TAG, "IMU %s %.0f Гц, сбоев %lu | телефон %s | тряска %.2f °/с %.3f м/с² (пороги %.2f %.3f) | "
              "смещение %d мдег/с (%s) | %s%s%s",
-             imu_state_name(imu.state), imu.odr_measured_hz, net.phone ? "да" : "нет",
+             imu_state_name(imu.state), imu.odr_measured_hz, (unsigned long)imu.errors,
+             net.phone ? "да" : "нет",
              mo.shake_gyro_dps, mo.shake_acc, cfg_get_float("still_gyro"),
              cfg_get_float("still_acc"),
              mo.bias_up_mdps, (mo.flags & MOTION_BIAS_OK) ? "есть" : "нет",
@@ -144,12 +168,59 @@ static void log_status(void)
              net.bt_bonds, net.bt_pairing ? " | ОКНО СОПРЯЖЕНИЯ ОТКРЫТО" : "");
 }
 
+#if CONFIG_NOGPS_TEST_FLASH_STRESS
+// Проверка на столе (menuconfig): запись во флеш в фоне, примерно в темпе приёма обновления.
+static void flash_stress_task(void *arg)
+{
+    static uint8_t buf[4096];
+    const esp_partition_t *p = esp_ota_get_next_update_partition(NULL);
+    memset(buf, 0x5A, sizeof(buf));
+    vTaskDelay(pdMS_TO_TICKS(10000));
+    ESP_LOGW(TAG, "ПРОВЕРКА: запись во флеш в фоне, раздел %s", p->label);
+    for (uint32_t off = 0, n = 1;; off = (off + sizeof(buf)) % p->size, n++) {
+        esp_partition_erase_range(p, off, sizeof(buf));
+        esp_partition_write(p, off, buf, sizeof(buf));
+        if (n % 100 == 0) {
+            ESP_LOGW(TAG, "ПРОВЕРКА: записано секторов %lu", (unsigned long)n);
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+#endif
+
+#if CONFIG_NOGPS_TEST_STATUS_POLL
+// Проверка на столе (menuconfig): состояние гироскопа спрашивается очень часто. Гироскоп работает,
+// поэтому ответов «задача стоит» быть не должно.
+static void status_poll_task(void *arg)
+{
+    uint32_t calls = 0, stalled = 0;
+    int64_t next = esp_timer_get_time() + 10000000;
+    vTaskDelay(pdMS_TO_TICKS(5000));
+    for (;;) {
+        for (int i = 0; i < 500; i++) {
+            imu_status_t imu;
+            imu_get_status(&imu);
+            calls++;
+            stalled += imu.stalled;
+        }
+        vTaskDelay(1);
+        if (esp_timer_get_time() >= next) {
+            next += 10000000;
+            ESP_LOGW(TAG, "ПРОВЕРКА: опросов состояния %lu, ответов «задача стоит» %lu",
+                     (unsigned long)calls, (unsigned long)stalled);
+        }
+    }
+}
+#endif
+
 void app_main(void)
 {
     init_nvs();
-    cfg_init(CONFIG_NOGPS_WIFI_PASS, CONFIG_NOGPS_BT_PIN, CONFIG_NOGPS_IMU_ODR);
+    cfg_init(CONFIG_NOGPS_WIFI_PASS, CONFIG_NOGPS_BT_PIN, CONFIG_NOGPS_IMU_ODR,
+             esp_reset_reason() == ESP_RST_POWERON);
     const char *fw = esp_app_get_description()->version;
     events_add('I', "BOOT", "fw %s reset %s", fw, reset_reason());
+    ESP_LOGI(TAG, "включений питанием: %lu", (unsigned long)cfg_power_ons());
     update_init();
 
     ESP_ERROR_CHECK(led_start());
@@ -186,6 +257,12 @@ void app_main(void)
     if (power_start() != ESP_OK) {
         ESP_LOGE(TAG, "контроль питания не запустился");
     }
+#if CONFIG_NOGPS_TEST_FLASH_STRESS
+    xTaskCreate(flash_stress_task, "flash_stress", 4096, NULL, 5, NULL);
+#endif
+#if CONFIG_NOGPS_TEST_STATUS_POLL
+    xTaskCreatePinnedToCore(status_poll_task, "status_poll", 4096, NULL, 1, NULL, 0);
+#endif
 
     for (int t = 0;; t += 100) {
         update_power();

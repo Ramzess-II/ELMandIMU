@@ -10,6 +10,9 @@
 
 #define TAG "config"
 #define VALUE_MAX 64
+#define KEY_POWER_ONS "power_ons"
+
+static uint32_t s_power_ons;
 
 typedef enum { T_STR, T_INT, T_FLOAT } type_t;
 
@@ -93,8 +96,33 @@ static void apply(item_t *it, const char *v, float num)
     it->num = num;
 }
 
-void cfg_init(const char *default_wifi_pass, const char *default_bt_pin, int default_imu_odr)
+// Одна запись во флеш на каждое включение питанием. Блок в разъёме OBD под питанием постоянно, так что
+// это редкость: вынули и вставили.
+static void count_power_on(bool power_on)
 {
+    nvs_handle_t h;
+    if (nvs_open(CONFIG_NVS_NAMESPACE, power_on ? NVS_READWRITE : NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    nvs_get_u32(h, KEY_POWER_ONS, &s_power_ons);
+    if (power_on) {
+        s_power_ons++;
+        if (nvs_set_u32(h, KEY_POWER_ONS, s_power_ons) != ESP_OK || nvs_commit(h) != ESP_OK) {
+            ESP_LOGE(TAG, "счётчик включений не записан");
+        }
+    }
+    nvs_close(h);
+}
+
+uint32_t cfg_power_ons(void)
+{
+    return s_power_ons;
+}
+
+void cfg_init(const char *default_wifi_pass, const char *default_bt_pin, int default_imu_odr,
+              bool power_on)
+{
+    count_power_on(power_on);
     static char odr[12];
     snprintf(odr, sizeof(odr), "%d", default_imu_odr);
     find("wifi_pass")->def = default_wifi_pass;

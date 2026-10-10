@@ -8,6 +8,8 @@
 
 esp_err_t imu_bus_open(const imu_bus_config_t *bus);
 void      imu_bus_close(void);
+// Освободить шину: датчик, которого перезагрузка ESP32 застала посреди чтения, держит SDA.
+void      imu_bus_reset(void);
 // true, если по адресу кто-то ответил ACK.
 bool      imu_bus_probe(uint8_t addr);
 // Подключить устройство по адресу, через него идут все чтения и записи ниже.

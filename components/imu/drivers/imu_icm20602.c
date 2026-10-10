@@ -46,6 +46,7 @@ static float s_gyro_scale;   // рад/с на LSB
 static float s_accel_scale;  // м/с² на LSB
 static int64_t s_period_us;
 static uint8_t s_buf[FIFO_BYTES];
+static bool s_resync;        // чтение FIFO оборвалось: граница кадров могла сбиться
 
 // Полоса гироскопа по DLPF_CFG 1..6 (9.16), Гц.
 static const int s_gyro_bw[] = {0, 176, 92, 41, 20, 10, 5};
@@ -132,6 +133,7 @@ static esp_err_t icm20602_init(const imu_config_t *cfg, int *actual_odr_hz)
 
     CHECK(imu_bus_write(REG_FIFO_EN, 0));
     CHECK(fifo_reset());
+    s_resync = false;
     CHECK(imu_bus_write(REG_FIFO_EN, FIFO_EN_GYRO | FIFO_EN_ACCEL));
     uint8_t st;
     imu_bus_read(REG_INT_STATUS, &st, 1);  // сбросить старые флаги
@@ -140,6 +142,13 @@ static esp_err_t icm20602_init(const imu_config_t *cfg, int *actual_odr_hz)
 
 static int icm20602_read(imu_sample_t *out, int max)
 {
+    if (s_resync) {
+        if (fifo_reset() != ESP_OK) {
+            return -1;
+        }
+        s_resync = false;
+        return 0;
+    }
     uint8_t c[2];
     if (imu_bus_read(REG_FIFO_COUNTH, c, 2) != ESP_OK) {
         return -1;
@@ -162,6 +171,7 @@ static int icm20602_read(imu_sample_t *out, int max)
         return 0;
     }
     if (imu_bus_read(REG_FIFO_R_W, s_buf, n * FRAME_BYTES) != ESP_OK) {
+        s_resync = true;
         return -1;
     }
     // Последний отсчёт в FIFO считаем снятым в момент чтения счётчика, остальные — через период датчика.
