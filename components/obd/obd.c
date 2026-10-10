@@ -215,7 +215,7 @@ static bool probe(int baud, char *ati)
 
 static int find_baud(char *ati)
 {
-    int fixed = config_get_int("obd_baud");
+    int fixed = cfg_get_int("obd_baud");
     if (fixed > 0) {
         return probe(fixed, ati) ? fixed : 0;
     }
@@ -292,7 +292,7 @@ static conn_t connect(char *r)
             if (proto != s_proto) {
                 char v[4];
                 snprintf(v, sizeof(v), "%d", proto);
-                config_set("obd_proto", v);
+                cfg_set("obd_proto", v);
                 s_proto = proto;
             }
         }
@@ -571,8 +571,8 @@ static void obd_task(void *arg)
     }
 }
 
-#if CONFIG_NOGPS_OBD_SIMULATE
 // Имитация для стола (раздел 13): синус 0–60 км/ч с периодом 60 с, отрицательная половина — стоянка.
+// Включается настройкой bench, чтобы плата на столе и блок в машине работали на одной прошивке.
 static void sim_task(void *arg)
 {
     set_info("SIMULATED", 0);
@@ -588,17 +588,19 @@ static void sim_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
-#endif
 
 esp_err_t obd_start(obd_speed_cb_t cb)
 {
     s_cb = cb;
-    s_proto = config_get_int("obd_proto");
+    s_proto = cfg_get_int("obd_proto");
+    bool sim = cfg_get_int("bench");
 #if CONFIG_NOGPS_OBD_SIMULATE
-    ESP_LOGW(TAG, "имитация OBD: скорость по синусу, UART не используется");
-    (void)obd_task;
-    return xTaskCreate(sim_task, "obd_task", 3072, NULL, 8, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
-#else
+    sim = true;
+#endif
+    if (sim) {
+        ESP_LOGW(TAG, "имитация OBD: скорость по синусу, UART не используется");
+        return xTaskCreate(sim_task, "obd_task", 3072, NULL, 8, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+    }
     uart_config_t uc = {
         .baud_rate = s_bauds[0],
         .data_bits = UART_DATA_8_BITS,
@@ -624,7 +626,6 @@ esp_err_t obd_start(obd_speed_cb_t cb)
     ESP_LOGI(TAG, "UART%d TX=GPIO%d RX=GPIO%d", PORT, CONFIG_NOGPS_OBD_TX, CONFIG_NOGPS_OBD_RX);
     set_state(OBD_STATE_INIT, OBD_ERROR_NONE);
     return xTaskCreate(obd_task, "obd_task", 5120, NULL, 8, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
-#endif
 }
 
 void obd_get_status(obd_status_t *out)

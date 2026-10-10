@@ -69,6 +69,8 @@ void motion_on_samples(const imu_sample_t *s, int n, void *ctx);
 
 // Скорость из OBD, км/ч, и момент её получения (esp_timer_get_time).
 void motion_set_speed(int kmh, int64_t t_us);
+// Скорость сейчас, км/ч; -1, если свежей скорости нет.
+int  motion_speed_kmh(void);
 
 // Данные для NGD; сбрасывает накопление средней скорости поворота.
 void motion_take_packet(motion_packet_t *out);

@@ -3,5 +3,33 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 # Тик 1 мс, чтобы imu_task опрашивал FIFO ровно раз в 10 мс
 CONFIG_FREERTOS_HZ=1000
-# Приложение больше 1 МБ: раздел 1.5 МБ
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+
+# Два раздела под прошивку (partitions.csv): обновление из приложения пишется в неработающий
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# Прошивка после обновления должна подтвердить себя, иначе загрузчик вернёт прежнюю
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Подпись: по радио блок принимает только образ, подписанный тем же ключом, что и работающая
+# прошивка. eFuse не трогаются, Secure Boot и шифрование флеша выключены: проводом блок
+# прошивается всегда. Ключа в репозитории нет, как его создать — README, раздел «Подпись».
+CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT=y
+CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME=y
+CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT=y
+CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES=y
+CONFIG_SECURE_BOOT_SIGNING_KEY="keys/nogps_signing_key.pem"
+
+# Bluetooth LE (NimBLE): блок — периферийное устройство, одно соединение, только LE Secure Connections
+CONFIG_BT_ENABLED=y
+CONFIG_BT_NIMBLE_ENABLED=y
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
+CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
+CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
+CONFIG_BT_NIMBLE_SM_LEGACY=n
+CONFIG_BT_NIMBLE_SM_SC_ONLY=1
+CONFIG_BT_NIMBLE_MAX_BONDS=4
+# Привязанные телефоны хранятся в NVS и переживают перезагрузку и обновление
+CONFIG_BT_NIMBLE_NVS_PERSIST=y
+CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=247
+# В задаче стека работают и наши обработчики: журнал событий, запись привязок в NVS
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=5120

@@ -27,6 +27,10 @@ typedef struct {
 esp_err_t power_start(void);
 void power_get_status(power_status_t *out);
 
+// Главный цикл сообщает, включено ли сейчас радио (Wi-Fi и Bluetooth). Пока оно не выключено
+// на самом деле, блок не засыпает: Bluetooth выключается не мгновенно.
+void power_radio_state(bool on);
+
 #ifdef __cplusplus
 }
 #endif

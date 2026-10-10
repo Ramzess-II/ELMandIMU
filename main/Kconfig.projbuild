@@ -1,8 +1,17 @@
 menu "NoGPS"
 
+    config NOGPS_BOARD
+        string "Вариант платы (уходит в строку NGI: по нему приложение выбирает файл прошивки)"
+        default "c3supermini" if IDF_TARGET_ESP32C3
+        default "s3zero"
+
     config NOGPS_WIFI_PASS
         string "Пароль Wi-Fi по умолчанию (8–63 символа, меняется командой SET)"
         default "12345678"
+
+    config NOGPS_BT_PIN
+        string "Код сопряжения Bluetooth по умолчанию (6 цифр, меняется командой SET)"
+        default "123456"
 
     menu "IMU"
         config NOGPS_IMU_I2C_PORT

@@ -17,6 +17,7 @@
 #include "config.h"
 #include "events.h"
 #include "imu.h"
+#include "update.h"
 
 #define TAG "power"
 
@@ -56,6 +57,7 @@ static adc_cali_handle_t s_cali;
 static adc_channel_t s_chan;
 static float s_adc_mv = -1;     // сглаженное напряжение сети по АЦП без поправки, -1 пока нет
 static float s_k = 1.0f;        // поправочный коэффициент делителя
+static volatile bool s_radio_on = true;
 
 // ---- АЦП ----
 
@@ -164,7 +166,7 @@ static const char *sleep_until_wake(float *base)
 
         int nom = adc_read(false);
         int v = nom >= 0 ? (int)(nom * s_k) : -1;
-        if (config_get_int("sleep_after_s") == 0 || config_get_int("wifi_off_s") == 0) {
+        if (cfg_get_int("sleep_after_s") == 0 || cfg_get_int("wifi_off_s") == 0) {
             why = "saving off";
         } else if (v < 0) {
             why = "no voltage";
@@ -200,7 +202,7 @@ static void power_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
         int64_t now = esp_timer_get_time();
-        int off_s = config_get_int("wifi_off_s");
+        int off_s = cfg_get_int("wifi_off_s");
 
         obd_status_t obd;
         obd_get_status(&obd);
@@ -266,7 +268,9 @@ static void power_task(void *arg)
 
         if (!parked) {
             // Работа. Wi-Fi держится первую минуту после старта и минуту после остановки двигателя.
-            if (keep_until == 0 || running || no_source) {
+            // Прошивка после обновления ещё не подтверждена — тоже держим: к ней должен успеть
+            // подключиться телефон.
+            if (keep_until == 0 || running || no_source || update_hold_awake()) {
                 keep_until = now + (int64_t)off_s * 1000000;
             }
             bool want = off_s == 0 || now < keep_until;
@@ -291,7 +295,7 @@ static void power_task(void *arg)
         } else {
             // Стоянка: будит только рост напряжения.
             const char *why = NULL;
-            int sleep_s = config_get_int("sleep_after_s");
+            int sleep_s = cfg_get_int("sleep_after_s");
             // sleep_after_s считается от остановки двигателя, стоянка началась на off_s позже.
             int64_t sleep_at = parked_since + (int64_t)(sleep_s > off_s ? sleep_s - off_s : 0) * 1000000;
             if (off_s == 0) {
@@ -300,7 +304,7 @@ static void power_task(void *arg)
                 why = "no voltage";
             } else if (v - base >= RISE_MV) {
                 why = "voltage rise";
-            } else if (sleep_s && now >= sleep_at) {
+            } else if (sleep_s && now >= sleep_at && !s_radio_on) {
                 why = sleep_until_wake(&base);
                 now = esp_timer_get_time();
                 nom = adc_read(false);
@@ -348,6 +352,11 @@ esp_err_t power_start(void)
 {
     adc_init();
     return xTaskCreate(power_task, "power_task", 4096, NULL, 4, NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+}
+
+void power_radio_state(bool on)
+{
+    s_radio_on = on;
 }
 
 void power_get_status(power_status_t *out)

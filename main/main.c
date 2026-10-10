@@ -1,6 +1,7 @@
 // Блок датчиков NoGPS: запуск компонентов и светодиод состояния. Устройство прошивки — ТЗ, раздел 2.
 #include <stdio.h>
 
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -16,9 +17,9 @@
 #include "net.h"
 #include "obd.h"
 #include "power.h"
+#include "update.h"
 
 #define TAG "main"
-#define FW_VERSION "0.2.0"
 #define STATUS_LOG_MS 5000
 
 static const char *reset_reason(void)
@@ -47,7 +48,8 @@ static void init_nvs(void)
     ESP_ERROR_CHECK(err);
 }
 
-// Экономия на стоянке — компонент power: он решает, нужен ли Wi-Fi, здесь решение только исполняется.
+// Экономия на стоянке — компонент power: он решает, нужно ли радио (Wi-Fi и Bluetooth), здесь решение
+// только исполняется.
 static bool s_wifi = true;
 
 static void update_power(void)
@@ -56,8 +58,25 @@ static void update_power(void)
     power_get_status(&pw);
     if (pw.wifi != s_wifi) {
         s_wifi = pw.wifi;
-        net_set_wifi(s_wifi);
+        if (s_wifi) {
+            power_radio_state(true);
+        }
+        net_set_radio(s_wifi);
+        if (!s_wifi) {
+            power_radio_state(false);
+        }
     }
+}
+
+// Прошивка, пришедшая обновлением, подтверждает себя, когда к ней подключился телефон и гироскоп
+// на месте.
+static void update_firmware_state(void)
+{
+    net_state_t net;
+    imu_status_t imu;
+    net_get_state(&net);
+    imu_get_status(&imu);
+    update_tick(net.phone, imu.state == IMU_STATE_OK);
 }
 
 // Раздел 11: если ошибок несколько, показывается первая по таблице.
@@ -100,8 +119,8 @@ static void log_status(void)
     ESP_LOGI(TAG, "IMU %s %.0f Гц | телефон %s | тряска %.2f °/с %.3f м/с² (пороги %.2f %.3f) | "
              "смещение %d мдег/с (%s) | %s%s%s",
              imu_state_name(imu.state), imu.odr_measured_hz, net.phone ? "да" : "нет",
-             mo.shake_gyro_dps, mo.shake_acc, config_get_float("still_gyro"),
-             config_get_float("still_acc"),
+             mo.shake_gyro_dps, mo.shake_acc, cfg_get_float("still_gyro"),
+             cfg_get_float("still_acc"),
              mo.bias_up_mdps, (mo.flags & MOTION_BIAS_OK) ? "есть" : "нет",
              (mo.flags & MOTION_UP_OK) ? "вертикаль есть" : "вертикали нет",
              (mo.flags & MOTION_STILL) ? ", стоит" : "",
@@ -111,27 +130,34 @@ static void log_status(void)
     power_status_t pw;
     power_get_status(&pw);
     ESP_LOGI(TAG, "OBD %s | двигатель %s, обороты %d | сеть: АЦП %d мВ (%s, k %d), ELM %d, машина %d | "
-             "%s, уровень засыпания %d мВ, Wi-Fi %s",
+             "%s, уровень засыпания %d мВ, радио %s",
              obd_state_name(obd.state),
              pw.engine == OBD_ENGINE_RUN ? "работает" : pw.engine == OBD_ENGINE_OFF ? "заглушен"
                                                                                      : "неизвестно",
              obd.rpm, pw.adc_mv, pw.adc_trusted ? "подтверждён" : "не подтверждён", pw.k_milli,
              obd.voltage_mv, obd.ecu_mv, pw.parked ? "стоянка" : "работа", pw.base_mv,
-             s_wifi ? "включён" : "выключен");
+             s_wifi ? "включено" : "выключено");
+    ESP_LOGI(TAG, "Bluetooth %s | привязано телефонов %d%s",
+             !net.bt_up ? "выключен" : net.bt_link ? "телефон подключён"
+                        : net.bt_conn ? "телефон подключается, связь ещё не зашифрована"
+                        : net.bt_adv ? "реклама идёт, ждёт телефон" : "РЕКЛАМЫ НЕТ",
+             net.bt_bonds, net.bt_pairing ? " | ОКНО СОПРЯЖЕНИЯ ОТКРЫТО" : "");
 }
 
 void app_main(void)
 {
     init_nvs();
-    config_init(CONFIG_NOGPS_WIFI_PASS, CONFIG_NOGPS_IMU_ODR);
-    events_add('I', "BOOT", "fw %s reset %s", FW_VERSION, reset_reason());
+    cfg_init(CONFIG_NOGPS_WIFI_PASS, CONFIG_NOGPS_BT_PIN, CONFIG_NOGPS_IMU_ODR);
+    const char *fw = esp_app_get_description()->version;
+    events_add('I', "BOOT", "fw %s reset %s", fw, reset_reason());
+    update_init();
 
     ESP_ERROR_CHECK(led_start());
     led_set(LED_FAST, 0);
     ESP_ERROR_CHECK(motion_init());
 
     imu_config_t cfg = {
-        .odr_hz = config_get_int("imu_odr"),
+        .odr_hz = cfg_get_int("imu_odr"),
         .gyro_range_dps = CONFIG_NOGPS_IMU_GYRO_RANGE,
         .accel_range_g = CONFIG_NOGPS_IMU_ACCEL_RANGE,
         .lpf_hz = CONFIG_NOGPS_IMU_LPF,
@@ -151,10 +177,10 @@ void app_main(void)
     if (imu_start(&cfg, motion_on_samples, NULL) != ESP_OK) {
         ESP_LOGE(TAG, "IMU не запустился");
     }
-    if (config_get_int("obd_enabled")) {
+    if (cfg_get_int("obd_enabled")) {
         obd_start(motion_set_speed);
     }
-    if (net_start(FW_VERSION) != ESP_OK) {
+    if (net_start(fw) != ESP_OK) {
         ESP_LOGE(TAG, "сеть не запустилась");
     }
     if (power_start() != ESP_OK) {
@@ -163,6 +189,7 @@ void app_main(void)
 
     for (int t = 0;; t += 100) {
         update_power();
+        update_firmware_state();
         update_led();
         if (t % STATUS_LOG_MS == 0) {
             log_status();

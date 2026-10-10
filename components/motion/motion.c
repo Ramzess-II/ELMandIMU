@@ -32,8 +32,14 @@
 #define PROGRESS_US     500000
 #define ACCEL_MIN       9.3f        // 7.3 п. 3
 #define ACCEL_MAX       10.3f
-#define MOUNT_DEG       8.0f        // 7.5
+// 7.5, «блок сдвинули». Наклон на угол a занижает измеренный поворот в cos(a) раз: 8° — это 1 %,
+// 20° — уже 6 %. Уклоны, на которых машина останавливается, до 20° не доходят, поэтому порог такой.
+#define MOUNT_DEG       20.0f
 #define MOUNT_STOPS     3
+// Стоянка идёт в счёт, только если после предыдущей учтённой машина уехала: три остановки на одном
+// склоне — это один и тот же уклон, измеренный трижды. Со скоростью из OBD мерка — путь, без неё — время.
+#define MOUNT_GAP_MM    150000.0
+#define MOUNT_GAP_US    60000000
 #define G_MMS2          9810        // вычитается из ускорения вдоль «вверх» (поле 13 NGD)
 #define CMD_STALL_US    1000000     // команда без отсчётов IMU — ERR,IMU
 // Калибровка по команде: вибрация допустима, она в среднем ноль. Движение видно по тому, что средние
@@ -69,6 +75,9 @@ static float   s_anchor[3];         // подтверждённое смещен
 static bool    s_refined;
 static int     s_mount_count;
 static bool    s_mount_moved;
+static bool    s_mount_seen;        // учтённая стоянка уже была
+static double  s_mount_dist_mm;     // путь на момент последней учтённой стоянки
+static int64_t s_mount_move_us;     // сколько машина двигалась после неё
 static double  s_yaw_deg;
 static float   s_prev_rate;
 static int64_t s_prev_t;
@@ -196,10 +205,10 @@ static void mean_acc(const stats_t *s, float out[3])
 // Разброс без поворота: гироскоп по всем осям и модуль ускорения (6.1 п. 1, 2).
 static bool quiet(const stats_t *s)
 {
-    if (s->n < 2 || sd(s->a, s->a2, s->n) >= config_get_float("still_acc")) {
+    if (s->n < 2 || sd(s->a, s->a2, s->n) >= cfg_get_float("still_acc")) {
         return false;
     }
-    double lim = config_get_float("still_gyro") * DEG2RAD;
+    double lim = cfg_get_float("still_gyro") * DEG2RAD;
     for (int k = 0; k < 3; k++) {
         if (sd(s->g[k], s->g2[k], s->n) >= lim) {
             return false;
@@ -289,7 +298,14 @@ static void set_bias(const float b[3], const imu_sample_t *x, int64_t now)
     s_bias_t_us = now;
 }
 
-static void on_stop_start(const stats_t *w, int64_t now)
+static void mount_reset(void)
+{
+    s_mount_moved = false;
+    s_mount_count = 0;
+    s_mount_seen = false;
+}
+
+static void on_stop_start(const stats_t *w, int64_t now, bool have_speed)
 {
     s_stop_start_us = now - (int64_t)NBLOCKS * BLOCK_US;
     mean_g(w, s_m1);
@@ -297,20 +313,31 @@ static void on_stop_start(const stats_t *w, int64_t now)
     s_az_blocks = 0;
     s_refined = false;
 
-    // 7.5: блок сдвинули, если вертикаль на трёх стоянках подряд уходит больше чем на 8°.
+    // 7.5: блок сдвинули, если вертикаль на трёх разных стоянках подряд уходит больше чем на 20°.
+    // Признак снимается сам на первой же стоянке, где вертикаль снова на месте: сдвинутый блок
+    // остаётся сдвинутым, а уклон остаётся на парковке.
     if (s_cal.up_ok) {
+        bool new_place = !s_mount_seen || (have_speed ? s_dist_mm - s_mount_dist_mm >= MOUNT_GAP_MM
+                                                      : s_mount_move_us >= MOUNT_GAP_US);
         float a[3];
         mean_acc(w, a);
-        if (normalize3(a)) {
+        if (new_place && normalize3(a)) {
+            s_mount_seen = true;
+            s_mount_dist_mm = s_dist_mm;
+            s_mount_move_us = 0;
             float c = fminf(fmaxf(dot3(a, s_cal.up), -1), 1);
             float ang = acosf(c) * RAD2DEG;
             if (ang > MOUNT_DEG) {
                 if (++s_mount_count >= MOUNT_STOPS && !s_mount_moved) {
                     s_mount_moved = true;
-                    events_add('E', "MOUNT_MOVED", "%.1f deg", ang);
+                    events_add('E', "MOUNT_MOVED", "%.1f deg up %.3f %.3f %.3f", ang, a[0], a[1], a[2]);
                 }
             } else {
                 s_mount_count = 0;
+                if (s_mount_moved) {
+                    s_mount_moved = false;
+                    events_add('I', "MOUNT_OK", "%.1f deg", ang);
+                }
             }
         }
     }
@@ -358,7 +385,7 @@ static void autozero_block(const stats_t *w, const imu_sample_t *x, int64_t now)
         float j[3] = {cand[0] - s_cal.bias[0], cand[1] - s_cal.bias[1], cand[2] - s_cal.bias[2]};
         float jump = fabsf(up_dps(j));
         int64_t stop_us = now - s_stop_start_us;
-        if (s_cal.bias_ok && stop_us < SHORT_STOP_US && jump > config_get_float("bias_max_jump")) {
+        if (s_cal.bias_ok && stop_us < SHORT_STOP_US && jump > cfg_get_float("bias_max_jump")) {
             events_add('W', "CAL_AUTO_REJECTED", "jump %.3f dps stop %d s", jump, (int)(stop_us / 1000000));
             memcpy(s_m1, m, sizeof(s_m1));
             break;
@@ -390,7 +417,7 @@ static bool eval_still(const stats_t *w, int64_t now, int speed, int64_t speed_t
         return false;
     }
     bool have_speed = speed >= 0 && now - speed_t < SPEED_FRESH_US;
-    float lim = config_get_float("still_rate");
+    float lim = cfg_get_float("still_rate");
     if (!have_speed) {
         lim = fminf(lim, STILL_RATE_NO_OBD);
     }
@@ -455,9 +482,12 @@ static void block_done(const imu_sample_t *x, int speed, int64_t speed_t, int64_
     }
 
     bool still = eval_still(&w, now, speed, speed_t, nonzero_t);
+    if (!still) {
+        s_mount_move_us += BLOCK_US;
+    }
     if (still && !s_still) {
         s_still = true;
-        on_stop_start(&w, now);
+        on_stop_start(&w, now, speed >= 0 && now - speed_t < SPEED_FRESH_US);
     } else if (!still && s_still) {
         s_still = false;
         on_stop_end();
@@ -473,8 +503,7 @@ static void cmd_start(motion_cmd_t cmd, int seq)
     if (cmd == MOTION_CMD_CAL_RESET) {
         s_cal.up_ok = false;
         s_cal.fwd_ok = false;
-        s_mount_moved = false;
-        s_mount_count = 0;
+        mount_reset();
         request_save();
         reply(seq, -1, NULL);
         return;
@@ -556,8 +585,7 @@ static void cmd_finish(const imu_sample_t *x)
             memcpy(s_cal.up, u, sizeof(u));
         }
         s_cal.up_ok = true;
-        s_mount_moved = false;
-        s_mount_count = 0;
+        mount_reset();
         memcpy(s_up, s_cal.up, sizeof(s_up));
         update_horizon();
         events_add('I', "CAL_UP_OK", "%s up %.3f %.3f %.3f",
@@ -864,4 +892,13 @@ bool motion_last_sample(imu_sample_t *out)
     *out = s_pub.last;
     taskEXIT_CRITICAL(&s_lock);
     return ok;
+}
+
+int motion_speed_kmh(void)
+{
+    int64_t now = esp_timer_get_time();
+    taskENTER_CRITICAL(&s_lock);
+    int v = s_speed_kmh >= 0 && now - s_speed_t_us < SPEED_FRESH_US ? s_speed_kmh : -1;
+    taskEXIT_CRITICAL(&s_lock);
+    return v;
 }

@@ -1,4 +1,4 @@
-idf_component_register(SRCS "net.c"
+idf_component_register(SRCS "net.c" "ble.c"
                        INCLUDE_DIRS "include"
-                       PRIV_REQUIRES esp_wifi esp_netif esp_event esp_timer lwip
-                                     config events imu motion obd power proto)
+                       PRIV_REQUIRES esp_wifi esp_netif esp_event esp_timer lwip bt spi_flash
+                                     config events imu motion obd power proto update)

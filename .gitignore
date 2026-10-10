@@ -89,3 +89,10 @@ sdkconfig.c3.old
 dependencies.lock
 sdkconfig.s3
 sdkconfig.s3.old
+
+# Ключ подписи прошивки: у каждого свой, в репозиторий не попадает никогда
+keys/
+*.pem
+
+# Файлы выпуска (tools/make_release.py)
+release/

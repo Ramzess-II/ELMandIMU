@@ -27,6 +27,8 @@ static item_t s_items[] = {
     {"wifi_mode",     "ap",   T_STR,   2, 3,       false, "", 0},
     {"wifi_ssid",     "",     T_STR,   0, 32,      false, "", 0},  // пусто — NoGPS-XXXX
     {"wifi_pass",     NULL,   T_STR,   8, 63,      false, "", 0},
+    // Код, который телефон спрашивает при сопряжении по Bluetooth: ровно 6 цифр.
+    {"bt_pin",        NULL,   T_STR,   6, 6,       true, "", 0},
     {"imu_driver",    "auto", T_STR,   1, 31,      false, "", 0},
     {"imu_odr",       NULL,   T_INT,   200, 1000,  false, "", 0},
     {"still_acc",     "0.08", T_FLOAT, 0.005, 2,   true, "", 0},
@@ -36,6 +38,9 @@ static item_t s_items[] = {
     {"obd_enabled",   "1",    T_INT,   0, 1,       false, "", 0},
     {"obd_baud",      "0",    T_INT,   0, 2000000, false, "", 0},
     {"obd_proto",     "0",    T_INT,   0, 12,      false, "", 0},
+    // 1 — плата для проверки на столе: вместо ELM327 скорость по синусу, а обновление прошивки
+    // принимается и по Wi-Fi. В машине должно быть 0.
+    {"bench",         "0",    T_INT,   0, 1,       false, "", 0},
     {"data_hz",       "50",   T_INT,   10, 100,    true, "", 0},
     // Экономия на стоянке: через сколько секунд после остановки двигателя выключить Wi-Fi; 0 — никогда.
     {"wifi_off_s",    "60",   T_INT,   0, 3600,    true, "", 0},
@@ -68,6 +73,9 @@ static bool valid(const item_t *it, const char *v, float *num)
         if (strcmp(it->key, "wifi_mode") == 0) {
             return strcmp(v, "ap") == 0 || strcmp(v, "sta") == 0;
         }
+        if (strcmp(it->key, "bt_pin") == 0) {
+            return strspn(v, "0123456789") == len;
+        }
         return true;
     }
     char *end;
@@ -85,11 +93,12 @@ static void apply(item_t *it, const char *v, float num)
     it->num = num;
 }
 
-void config_init(const char *default_wifi_pass, int default_imu_odr)
+void cfg_init(const char *default_wifi_pass, const char *default_bt_pin, int default_imu_odr)
 {
     static char odr[12];
     snprintf(odr, sizeof(odr), "%d", default_imu_odr);
     find("wifi_pass")->def = default_wifi_pass;
+    find("bt_pin")->def = default_bt_pin;
     find("imu_odr")->def = odr;
 
     nvs_handle_t h;
@@ -117,25 +126,25 @@ void config_init(const char *default_wifi_pass, int default_imu_odr)
     }
 }
 
-const char *config_get_str(const char *key)
+const char *cfg_get_str(const char *key)
 {
     item_t *it = find(key);
     return it ? it->str : "";
 }
 
-int config_get_int(const char *key)
+int cfg_get_int(const char *key)
 {
     item_t *it = find(key);
     return it ? (int)it->num : 0;
 }
 
-float config_get_float(const char *key)
+float cfg_get_float(const char *key)
 {
     item_t *it = find(key);
     return it ? it->num : 0;
 }
 
-esp_err_t config_set(const char *key, const char *value)
+esp_err_t cfg_set(const char *key, const char *value)
 {
     item_t *it = find(key);
     if (!it) {
