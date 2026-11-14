@@ -36,6 +36,9 @@
 #define OTA_MIN_MV        11800     // обновление не начинается при напряжении ниже 11.8 В
 #define RESTART_AFTER_US  1000000   // перезагрузка после удачного обновления
 #define BQ_LEN            12        // строк в очереди для Bluetooth
+#define QUICK_RUN_US      60000000  // a power-on that has run this long is not a quick one (BLE-16)
+#define SEEN_WRITE_S      3600      // the time a phone was seen is written to the flash not more often
+#define NO_CONN           0xFFFE    // not BLE_TO_ALL: a line to nobody is dropped
 
 // Биты NGD, которые не знает motion (9.3).
 #define FLAG_IMU_OK     0x001
@@ -49,8 +52,18 @@ static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static net_state_t s_state;
 
 // Состояние net_task.
-static int64_t s_last_hello;
+// The phones sending HELLO, one for each link. The one that has sent it first changes the box (spec 9.5).
+typedef struct {
+    uint16_t conn;      // NO_CONN: free
+    int64_t  since, last_hello;
+} phone_t;
+static phone_t s_phones[BLE_LINKS];
 static bool    s_phone;
+static uint16_t s_cal_conn = NO_CONN;
+// The phone that has forgotten itself: its link is dropped after the reply has gone.
+static uint16_t s_drop_conn = NO_CONN;
+static int64_t  s_drop_at;
+#define DROP_AFTER_US     500000
 static uint32_t s_seq;
 static uint32_t s_sent_ev;
 static int64_t s_test_until;
@@ -65,6 +78,7 @@ static uint32_t s_bt_drops;
 static struct {
     bool     active;
     int      seq;
+    uint16_t conn;
     uint32_t next, last;
 } s_replay;
 
@@ -74,6 +88,7 @@ static uint32_t s_ota_reported;
 static bool     s_ota_resend;
 static int64_t  s_ota_ngo_at;
 static int      s_ota_end_seq = -1;     // OTA_END, на который ещё не отвечено
+static volatile uint16_t s_ota_conn = NO_CONN;  // the phone sending the firmware
 static int64_t  s_restart_at;
 
 void net_get_state(net_state_t *out)
@@ -97,7 +112,8 @@ void net_get_state(net_state_t *out)
 // здесь и уходят раньше NGD. Из NGS в очереди держится только самая свежая.
 
 typedef struct {
-    uint16_t len, sent;
+    uint16_t len;
+    uint16_t to;        // a link or BLE_TO_ALL
     bool     ngs;
     char     data[PROTO_LINE_MAX];
 } bq_item_t;
@@ -114,13 +130,8 @@ static void bq_flush(void)
 {
     while (s_bq_count) {
         bq_item_t *it = bq_at(0);
-        int n = ble_send(it->data + it->sent, it->len - it->sent);
-        if (n < 0) {
-            s_bq_count = 0;     // связи нет — слать некому
-            return;
-        }
-        it->sent += n;
-        if (it->sent < it->len) {
+        // -1: the phone has gone, the line is dropped.
+        if (ble_send(it->to, it->data, it->len) == 0) {
             return;             // очередь стека заполнена, остальное позже
         }
         s_bq_head = (s_bq_head + 1) % BQ_LEN;
@@ -128,13 +139,13 @@ static void bq_flush(void)
     }
 }
 
-static void bq_put(const char *line, int len, int sent)
+static void bq_put(uint16_t to, const char *line, int len)
 {
-    bool ngs = strncmp(line, "$NGS", 4) == 0;
+    bool ngs = strncmp(line, "$NGS", 4) == 0 && to == BLE_TO_ALL;
     bq_item_t *it = NULL;
     int old_ngs = -1;
     for (int i = 0; i < s_bq_count; i++) {
-        if (bq_at(i)->ngs && bq_at(i)->sent == 0) {
+        if (bq_at(i)->ngs) {
             old_ngs = i;
             break;
         }
@@ -157,7 +168,7 @@ static void bq_put(const char *line, int len, int sent)
     }
     memcpy(it->data, line, len);
     it->len = len;
-    it->sent = sent;
+    it->to = to;
     it->ngs = ngs;
 }
 
@@ -167,8 +178,8 @@ static bool has_room(void)
     return s_bq_count < BQ_LEN - 3;
 }
 
-// Строка из s_out — телефону. Если его нет, очередь сама опустеет: слать некому.
-static void send_line(int len)
+// Строка из s_out — the phone of the link |to| or all of them. Если их нет, очередь сама опустеет: слать некому.
+static void send_line(uint16_t to, int len)
 {
     if (len <= 0) {
         return;
@@ -176,23 +187,19 @@ static void send_line(int len)
     bq_flush();
     bool droppable = strncmp(s_out, "$NGD", 4) == 0 || strncmp(s_out, "$NGT", 4) == 0;
     if (!droppable) {
-        bq_put(s_out, len, 0);
+        bq_put(to, s_out, len);
         bq_flush();
     } else if (s_bq_count) {
         s_bt_drops++;       // сначала должны уйти строки из очереди
-    } else {
-        int n = ble_send(s_out, len);
-        if (n == 0) {
-            s_bt_drops++;
-        } else if (n > 0 && n < len) {
-            bq_put(s_out, len, n);      // начатую строку надо дослать целиком
-        }
+    } else if (ble_send(to, s_out, len) == 0) {
+        s_bt_drops++;
     }
 }
 
-static void send_reply(int seq, const char *what)
+// The reply goes only to the phone that sent the command: each phone numbers its commands from 1.
+static void send_reply(uint16_t to, int seq, const char *what)
 {
-    send_line(proto_line(s_out, sizeof(s_out), "NGA,%d,%s", seq, what));
+    send_line(to, proto_line(s_out, sizeof(s_out), "NGA,%d,%s", seq, what));
 }
 
 // ---- строки блока ----
@@ -234,10 +241,10 @@ static void send_ngd(void)
                          PROTO_VERSION, (unsigned long)s_seq++, (unsigned long)p.t_ms,
                          (long long)p.yaw_mdeg, (long)p.rate_mdps, (unsigned long long)p.dist_mm,
                          p.speed_kmh, p.speed_age_ms, (unsigned long)flags, acc);
-    send_line(len);
+    send_line(BLE_TO_ALL, len);
 }
 
-static void send_ngs(void)
+static void send_ngs(uint16_t to)
 {
     imu_status_t imu;
     obd_status_t obd;
@@ -281,33 +288,33 @@ static void send_ngs(void)
                          protocol, bias_age, temp, (unsigned long)imu.errors,
                          imu_state_name(imu.state), chip, obd_error_name(obd.error), obd.baud,
                          mo.bias_up_mdps, (unsigned long)events_last(), engine, rpm, volt, elm, ecu);
-    send_line(len);
+    send_line(to, len);
 }
 
-static void send_nge(const event_t *ev)
+static void send_nge(uint16_t to, const event_t *ev)
 {
-    send_line(proto_line(s_out, sizeof(s_out), "NGE,%d,%lu,%lu,%c,%s,%s", PROTO_VERSION,
+    send_line(to, proto_line(s_out, sizeof(s_out), "NGE,%d,%lu,%lu,%c,%s,%s", PROTO_VERSION,
                          (unsigned long)ev->num, (unsigned long)ev->t_ms, ev->level, ev->code,
                          ev->text));
 }
 
 // Сведения о блоке, которые не меняются на ходу: один раз после первого HELLO и по команде INFO.
-static void send_ngi(void)
+static void send_ngi(uint16_t to)
 {
     update_info_t u;
     update_get_info(&u);
     uint32_t flash = 0;
     esp_flash_get_size(NULL, &flash);
-    send_line(proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s,%lu",
+    send_line(to, proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s,%lu",
                          PROTO_VERSION, u.version, u.build, CONFIG_IDF_TARGET, CONFIG_NOGPS_BOARD,
                          s_id, (unsigned long)(flash / 1024), (unsigned long)u.max_image, u.slot,
-                         u.slot_state, u.can_update ? "BLE OTA CAR" : "BLE CAR",
+                         u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI" : "BLE CAR PHONES MULTI",
                          (unsigned long)cfg_power_ons()));
 }
 
 // ---- обновление прошивки (раздел 18) ----
 
-static void ota_begin(char **f, int n, int seq)
+static void ota_begin(uint16_t from, char **f, int n, int seq)
 {
     obd_status_t obd;
     power_status_t pw;
@@ -334,15 +341,14 @@ static void ota_begin(char **f, int n, int seq)
     char r[40];
     if (err) {
         snprintf(r, sizeof(r), "ERR,%s", err);
-        send_reply(seq, r);
+        send_reply(from, seq, r);
         return;
     }
     // Кусок — сколько влезает в одну запись: MTU минус заголовок записи и смещение.
-    ble_state_t b;
-    ble_get_state(&b);
-    int chunk = b.mtu - 3 - 4;
+    int chunk = ble_link_mtu(from) - 4;
     snprintf(r, sizeof(r), "OK,%d,%d", chunk > UPDATE_CHUNK_MAX ? UPDATE_CHUNK_MAX : chunk, UPDATE_WINDOW);
-    send_reply(seq, r);
+    send_reply(from, seq, r);
+    s_ota_conn = from;
     s_ota_state = UPDATE_RECV;
     s_ota_reported = 0;
     s_ota_resend = false;
@@ -377,7 +383,7 @@ static void ota_poll(int64_t now)
         case UPDATE_ABORTED: strlcpy(st, "ABORTED", sizeof(st)); break;
         default:             snprintf(st, sizeof(st), "ERR_%s", p.err); break;
         }
-        send_line(proto_line(s_out, sizeof(s_out), "NGO,%d,%lu,%s", PROTO_VERSION,
+        send_line(s_ota_conn, proto_line(s_out, sizeof(s_out), "NGO,%d,%lu,%s", PROTO_VERSION,
                              (unsigned long)p.received, st));
         s_ota_reported = p.received;
         s_ota_resend = false;
@@ -389,17 +395,18 @@ static void ota_poll(int64_t now)
     s_ota_state = p.state;
     if (p.state == UPDATE_DONE) {
         if (s_ota_end_seq >= 0) {
-            send_reply(s_ota_end_seq, "OK");
+            send_reply(s_ota_conn, s_ota_end_seq, "OK");
         }
         s_restart_at = now + RESTART_AFTER_US;
     } else if (p.state == UPDATE_ERROR && s_ota_end_seq >= 0) {
         char r[24];
         snprintf(r, sizeof(r), "ERR,%s", p.err);
-        send_reply(s_ota_end_seq, r);
+        send_reply(s_ota_conn, s_ota_end_seq, r);
     }
     if (p.state != UPDATE_RECV && p.state != UPDATE_VERIFY) {
         s_ota_state = UPDATE_IDLE;
         s_ota_end_seq = -1;
+        s_ota_conn = NO_CONN;
     }
 }
 
@@ -410,16 +417,190 @@ static void send_ngt(void)
         return;
     }
     const float r2md = 180000.0f / 3.14159265f;
-    send_line(proto_line(s_out, sizeof(s_out), "NGT,%d,%lu,%ld,%ld,%ld,%ld,%ld,%ld", PROTO_VERSION,
+    send_line(BLE_TO_ALL, proto_line(s_out, sizeof(s_out), "NGT,%d,%lu,%ld,%ld,%ld,%ld,%ld,%ld", PROTO_VERSION,
                          (unsigned long)(x.t_us / 1000), lroundf(x.gyro[0] * r2md),
                          lroundf(x.gyro[1] * r2md), lroundf(x.gyro[2] * r2md),
                          lroundf(x.accel[0] * 1000), lroundf(x.accel[1] * 1000),
                          lroundf(x.accel[2] * 1000)));
 }
 
+// ---- телефоны ----
+
+static phone_t *phone_find(uint16_t conn)
+{
+    for (int i = 0; i < BLE_LINKS; i++) {
+        if (s_phones[i].conn == conn && conn != NO_CONN) {
+            return &s_phones[i];
+        }
+    }
+    return NULL;
+}
+
+// The phone that sent HELLO first changes the box. A link without HELLO does it only when no phone sends HELLO.
+static bool is_owner(uint16_t conn)
+{
+    phone_t *me = phone_find(conn);
+    for (int i = 0; i < BLE_LINKS; i++) {
+        phone_t *p = &s_phones[i];
+        if (p->conn != NO_CONN && p->conn != conn && (!me || p->since < me->since)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Printable ASCII without the separators of a line and of BT_LIST, up to PHONE_NAME_MAX characters.
+static void clean_name(const char *in, char *out, size_t size)
+{
+    size_t n = 0;
+    for (const char *c = in; *c && n + 1 < size && n < PHONE_NAME_MAX; c++) {
+        bool bad = *c < 0x20 || *c > 0x7E || strchr(",*$|;", *c);
+        out[n++] = bad ? '_' : *c;
+    }
+    out[n] = '\0';
+}
+
+// HELLO,<name>,<Unix time, s>: the box keeps the name and the time of each paired phone for BT_LIST.
+static void remember_phone(uint16_t conn, const char *name_in, const char *time_in)
+{
+    char addr[BLE_ADDR_LEN];
+    if (!name_in || !ble_link_addr(conn, addr)) {
+        return;
+    }
+    char name[PHONE_NAME_MAX + 1], old[PHONE_NAME_MAX + 1];
+    clean_name(name_in, name, sizeof(name));
+    uint32_t seen = time_in ? strtoul(time_in, NULL, 10) : 0, old_seen = 0;
+    bool known = cfg_phone_get(addr, old, sizeof(old), &old_seen);
+    if (!known || strcmp(name, old) != 0 || seen > old_seen + SEEN_WRITE_S || seen + SEEN_WRITE_S < old_seen) {
+        cfg_phone_set(addr, name, seen);
+    }
+}
+
+static void hello(uint16_t from, char **f, int n, int64_t now)
+{
+    phone_t *p = phone_find(from);
+    if (!p) {
+        for (int i = 0; i < BLE_LINKS && !p; i++) {
+            if (s_phones[i].conn == NO_CONN) {
+                p = &s_phones[i];
+            }
+        }
+        if (!p) {
+            return;
+        }
+        if (!s_phone) {
+            s_sent_ev = events_last();      // a phone that joins later asks EVENTS for the older ones
+        }
+        p->conn = from;
+        p->since = now;
+        s_phone = true;
+        events_add('I', "PHONE_CONNECTED", "ble");
+        s_ngs_now = s_ngi_now = true;
+        remember_phone(from, n > 3 ? f[3] : NULL, n > 4 ? f[4] : NULL);
+        cfg_quick_power_ons_clear();
+    }
+    p->last_hello = now;
+}
+
+// The stack gives the handle of a link that has gone to the next one: nothing meant for the old phone goes there.
+static void forget_conn(uint16_t conn)
+{
+    int k = 0;
+    for (int i = 0; i < s_bq_count; i++) {
+        if (bq_at(i)->to != conn) {
+            *bq_at(k++) = *bq_at(i);
+        }
+    }
+    s_bq_count = k;
+    if (s_cal_conn == conn) {
+        s_cal_conn = NO_CONN;
+    }
+    if (s_ota_conn == conn) {
+        s_ota_conn = NO_CONN;
+    }
+    if (s_replay.active && s_replay.conn == conn) {
+        s_replay.active = false;
+    }
+}
+
+// The phone has left: no HELLO for 3 s, or its link has dropped.
+static void phones_tick(int64_t now)
+{
+    s_phone = false;
+    for (int i = 0; i < BLE_LINKS; i++) {
+        phone_t *p = &s_phones[i];
+        if (p->conn == NO_CONN) {
+            continue;
+        }
+        if (now - p->last_hello > HELLO_TIMEOUT_US || !ble_link_up(p->conn)) {
+            events_add('I', "PHONE_LOST", "ble");
+            if (p->conn == s_ota_conn) {
+                update_abort("LINK");   // обновление без телефона не продолжаем
+            }
+            forget_conn(p->conn);
+            p->conn = NO_CONN;
+        } else {
+            s_phone = true;
+        }
+    }
+}
+
+static void ota_chunk(uint16_t conn, const uint8_t *msg, size_t len)
+{
+    if (conn == s_ota_conn) {
+        update_chunk(msg, len);
+    }
+}
+
+// BT_LIST: OK,<addr>|<name>|<Unix time seen>|<1 if this link>;...,<1 if this link changes the box>
+static void list_phones(uint16_t from, int seq)
+{
+    char addrs[BLE_MAX_BONDS][BLE_ADDR_LEN];
+    int k = ble_bonded(addrs, BLE_MAX_BONDS);
+    if (k < 0) {
+        send_reply(from, seq, "ERR,BT");
+        return;
+    }
+    char me[BLE_ADDR_LEN] = "";
+    ble_link_addr(from, me);
+    static char r[PROTO_LINE_MAX];
+    size_t len = strlcpy(r, "OK,", sizeof(r));
+    for (int i = 0; i < k && len < sizeof(r); i++) {
+        char name[PHONE_NAME_MAX + 1], seen[12] = "";
+        uint32_t t = 0;
+        if (cfg_phone_get(addrs[i], name, sizeof(name), &t) && t) {
+            snprintf(seen, sizeof(seen), "%lu", (unsigned long)t);
+        }
+        len += snprintf(r + len, sizeof(r) - len, "%s%s|%s|%s|%d", i ? ";" : "", addrs[i], name, seen,
+                        strcasecmp(addrs[i], me) == 0);
+    }
+    if (len < sizeof(r)) {
+        snprintf(r + len, sizeof(r) - len, ",%d", is_owner(from));
+    }
+    send_reply(from, seq, r);
+}
+
 // ---- команды NGC (9.5) ----
 
-static void handle_cmd(char **f, int n, int64_t now)
+// Commands that change the box: only from the phone that came first, the others get ERR,BUSY.
+static bool changes_box(const char *cmd)
+{
+    static const char *const k[] = {"SET", "CAL_BIAS", "CAL_UP", "CAL_UP2", "CAL_RESET", "CAL_FWD", "CAR_SET",
+                                    "OTA_BEGIN", "OTA_END", "OTA_ABORT", "BT_PAIR", "BT_FORGET", "REBOOT"};
+    for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
+        if (strcmp(cmd, k[i]) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool code_ok(const char *code)
+{
+    return strlen(code) == 6 && strspn(code, "0123456789") == 6;
+}
+
+static void handle_cmd(uint16_t from, char **f, int n, int64_t now)
 {
     if (n < 3 || strcmp(f[0], "NGC") != 0) {
         return;
@@ -432,21 +613,19 @@ static void handle_cmd(char **f, int n, int64_t now)
     const char *cmd = f[2];
 
     if (strcmp(cmd, "HELLO") == 0) {
-        s_last_hello = now;
-        if (!s_phone) {
-            s_phone = true;
-            s_sent_ev = events_last();
-            events_add('I', "PHONE_CONNECTED", "ble");
-            s_ngs_now = s_ngi_now = true;
-        }
+        hello(from, f, n, now);
         return;
     }
     if (strcmp(cmd, "STATUS") == 0) {
-        send_ngs();
+        send_ngs(from);
         return;
     }
     if (strcmp(cmd, "INFO") == 0) {
-        send_ngi();
+        send_ngi(from);
+        return;
+    }
+    if (changes_box(cmd) && !is_owner(from)) {
+        send_reply(from, seq, "ERR,BUSY");
         return;
     }
 
@@ -463,14 +642,16 @@ static void handle_cmd(char **f, int n, int64_t now)
         imu_status_t imu;
         imu_get_status(&imu);
         if (cal[i].cmd != MOTION_CMD_CAL_RESET && imu.state != IMU_STATE_OK) {
-            send_reply(seq, "ERR,IMU");
+            send_reply(from, seq, "ERR,IMU");
             return;
         }
         const char *err = motion_command(cal[i].cmd, seq);
         if (err) {
             char r[24];
             snprintf(r, sizeof(r), "ERR,%s", err);
-            send_reply(seq, r);
+            send_reply(from, seq, r);
+        } else {
+            s_cal_conn = from;      // the replies of the calibration go to it
         }
         return;
     }
@@ -479,33 +660,34 @@ static void handle_cmd(char **f, int n, int64_t now)
         // 7.4: «вперёд» учится только по скорости из OBD — второй этап.
         motion_status_t mo;
         motion_get_status(&mo);
-        send_reply(seq, (mo.flags & MOTION_UP_OK) ? "ERR,NO_OBD" : "ERR,NO_UP");
+        send_reply(from, seq, (mo.flags & MOTION_UP_OK) ? "ERR,NO_OBD" : "ERR,NO_UP");
     } else if (strcmp(cmd, "EVENTS") == 0) {
         // Строки NGE и ответ OK шлёт net_task: журнал уходит не за один раз.
         if (s_replay.active) {
-            send_reply(s_replay.seq, "OK");
+            send_reply(s_replay.conn, s_replay.seq, "OK");
         }
         s_replay.active = true;
         s_replay.seq = seq;
+        s_replay.conn = from;
         s_replay.next = n > 3 ? strtoul(f[3], NULL, 10) : 1;
         s_replay.last = events_last();
     } else if (strcmp(cmd, "IMU_TEST") == 0) {
         imu_status_t imu;
         imu_get_status(&imu);
         if (imu.state != IMU_STATE_OK) {
-            send_reply(seq, "ERR,IMU");
+            send_reply(from, seq, "ERR,IMU");
             return;
         }
         s_test_until = now + IMU_TEST_US;
         s_next_ngt = now;
-        send_reply(seq, "OK");
+        send_reply(from, seq, "OK");
     } else if (strcmp(cmd, "SET") == 0) {
         if (n < 5) {
-            send_reply(seq, n < 4 ? "ERR,KEY" : "ERR,VALUE");
+            send_reply(from, seq, n < 4 ? "ERR,KEY" : "ERR,VALUE");
             return;
         }
         esp_err_t err = cfg_set(f[3], f[4]);
-        send_reply(seq, err == ESP_OK ? "OK" : err == ESP_ERR_NOT_FOUND ? "ERR,KEY"
+        send_reply(from, seq, err == ESP_OK ? "OK" : err == ESP_ERR_NOT_FOUND ? "ERR,KEY"
                                              : err == ESP_ERR_INVALID_ARG ? "ERR,VALUE" : "ERR,NVS");
     } else if (strcmp(cmd, "CAR_GET") == 0) {
         static char v[CAR_VALUE_MAX + 1];
@@ -518,7 +700,7 @@ static void handle_cmd(char **f, int n, int64_t now)
         } else {
             strlcpy(r, "OK", sizeof(r));
         }
-        send_reply(seq, r);
+        send_reply(from, seq, r);
     } else if (strcmp(cmd, "CAR_SET") == 0) {
         // "CAR_SET,key," erases the key: its value is the empty fifth field.
         const char *err = n < 4 ? "KEY" : n < 5 ? "VALUE" : cfg_car_set(f[3], f[4]);
@@ -526,51 +708,75 @@ static void handle_cmd(char **f, int n, int64_t now)
         if (err) {
             snprintf(r, sizeof(r), "ERR,%s", err);
         }
-        send_reply(seq, r);
+        send_reply(from, seq, r);
     } else if (strcmp(cmd, "OTA_BEGIN") == 0) {
-        ota_begin(f, n, seq);
+        ota_begin(from, f, n, seq);
     } else if (strcmp(cmd, "OTA_END") == 0) {
         const char *err = update_end();
         if (err) {
             char r[24];
             snprintf(r, sizeof(r), "ERR,%s", err);
-            send_reply(seq, r);
+            send_reply(from, seq, r);
         } else {
             s_ota_end_seq = seq;    // ответ — когда закончится проверка образа
         }
     } else if (strcmp(cmd, "OTA_ABORT") == 0) {
         update_abort(NULL);
-        send_reply(seq, "OK");
+        send_reply(from, seq, "OK");
     } else if (strcmp(cmd, "BT_PAIR") == 0) {
-        // Команда пришла от привязанного телефона: на 2 минуты разрешаем привязать ещё один.
-        ble_pair_open(BLE_PAIR_WINDOW);
-        send_reply(seq, "OK");
+        // Команда пришла от привязанного телефона: на 2 минуты разрешаем привязать ещё один, with the code given
+        // for one phone or with bt_pin.
+        ble_state_t b;
+        ble_get_state(&b);
+        if (n > 3 && !code_ok(f[3])) {
+            send_reply(from, seq, "ERR,VALUE");
+        } else if (b.bonds >= BLE_MAX_BONDS) {
+            send_reply(from, seq, "ERR,FULL");
+        } else {
+            ble_pair_open(BLE_PAIR_WINDOW, n > 3 ? f[3] : NULL);
+            send_reply(from, seq, "OK");
+        }
+    } else if (strcmp(cmd, "BT_FORGET") == 0 && n > 3) {
+        // A phone that forgets itself gets the reply before its link drops.
+        char me[BLE_ADDR_LEN] = "";
+        bool self = ble_link_addr(from, me) && strcasecmp(me, f[3]) == 0;
+        int rc = ble_forget_one(f[3], self ? from : NO_CONN);
+        if (rc == 0) {
+            events_add('I', "BT_FORGET", "%s", f[3]);
+        }
+        send_reply(from, seq, rc == 0 ? "OK" : rc == 1 ? "ERR,ADDR" : "ERR,BT");
+        if (self && rc == 0) {
+            s_drop_conn = from;
+            s_drop_at = now + DROP_AFTER_US;
+        }
     } else if (strcmp(cmd, "BT_FORGET") == 0) {
         int was = ble_forget();
         if (was < 0) {
-            send_reply(seq, "ERR,BT");
+            send_reply(from, seq, "ERR,BT");
         } else {
             events_add('I', "BT_FORGET", "%d", was);
-            send_reply(seq, "OK");
+            send_reply(from, seq, "OK");
         }
+    } else if (strcmp(cmd, "BT_LIST") == 0) {
+        list_phones(from, seq);
     } else if (strcmp(cmd, "REBOOT") == 0) {
-        send_reply(seq, "OK");
+        send_reply(from, seq, "OK");
         vTaskDelay(pdMS_TO_TICKS(200));
         esp_restart();
     } else {
-        send_reply(seq, "ERR,UNKNOWN");
+        send_reply(from, seq, "ERR,UNKNOWN");
     }
 }
 
 // Обычно одна строка на запись (BLE-5), но разрезать по \n не мешает.
-static void handle_lines(char *buf, int64_t now)
+static void handle_lines(uint16_t from, char *buf, int64_t now)
 {
     char *save = NULL;
     for (char *line = strtok_r(buf, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
         char *f[8];
         int n;
         if (proto_parse(line, f, 8, &n)) {
-            handle_cmd(f, n, now);
+            handle_cmd(from, f, n, now);
         }
     }
 }
@@ -578,8 +784,9 @@ static void handle_lines(char *buf, int64_t now)
 static void receive(int64_t now)
 {
     char buf[BLE_RX_MAX];
-    while (ble_recv(buf, sizeof(buf))) {
-        handle_lines(buf, now);
+    uint16_t from;
+    while (ble_recv(buf, sizeof(buf), &from)) {
+        handle_lines(from, buf, now);
     }
 }
 
@@ -660,19 +867,19 @@ static void net_task(void *arg)
             } else {
                 snprintf(what, sizeof(what), "ERR,%s", r.err);
             }
-            send_reply(r.seq, what);
+            send_reply(s_cal_conn, r.seq, what);
         }
 
         // Журнал по команде EVENTS.
         while (s_replay.active && has_room()) {
             if (s_replay.next > s_replay.last) {
-                send_reply(s_replay.seq, "OK");
+                send_reply(s_replay.conn, s_replay.seq, "OK");
                 s_replay.active = false;
                 break;
             }
             event_t ev;
             if (events_get(s_replay.next++, &ev)) {
-                send_nge(&ev);
+                send_nge(s_replay.conn, &ev);
             }
         }
 
@@ -683,10 +890,13 @@ static void net_task(void *arg)
         }
 
         // Сессия: нет HELLO 3 с — данные больше не шлём.
-        if (s_phone && now - s_last_hello > HELLO_TIMEOUT_US) {
-            s_phone = false;
-            events_add('I', "PHONE_LOST", "ble");
-            update_abort("LINK");   // обновление без телефона не продолжаем
+        phones_tick(now);
+        if (s_drop_conn != NO_CONN && now >= s_drop_at) {
+            ble_drop(s_drop_conn);
+            s_drop_conn = NO_CONN;
+        }
+        if (now >= QUICK_RUN_US) {
+            cfg_quick_power_ons_clear();
         }
         taskENTER_CRITICAL(&s_lock);
         s_state.phone = s_phone;
@@ -709,14 +919,14 @@ static void net_task(void *arg)
         }
 
         if (s_ngi_now) {
-            send_ngi();
+            send_ngi(BLE_TO_ALL);
             s_ngi_now = false;
         }
 
         ngs_sig_t sig;
         ngs_sig(&sig);
         if (s_ngs_now || now >= next_ngs || memcmp(&sig, &sig_sent, sizeof(sig)) != 0) {
-            send_ngs();
+            send_ngs(BLE_TO_ALL);
             sig_sent = sig;
             s_ngs_now = false;
             next_ngs = now + NGS_PERIOD_US;
@@ -727,7 +937,7 @@ static void net_task(void *arg)
         while (s_sent_ev < last && has_room()) {
             event_t ev;
             if (events_get(++s_sent_ev, &ev)) {
-                send_nge(&ev);
+                send_nge(BLE_TO_ALL, &ev);
             }
         }
     }
@@ -757,9 +967,18 @@ esp_err_t net_start(const char *fw_version)
 
     // Новый телефон привязывается только в «окне сопряжения». Оно открывается, когда на блок подали
     // питание или его перезагрузили через USB: и то и другое требует доступа к блоку.
-    ble_set_ota_cb(update_chunk);
+    // Новый телефон привязывается в окне сопряжения after a power-on only while the box has no phones. Three quick
+    // power-ons in a row erase them all (BLE-16).
+    for (int i = 0; i < BLE_LINKS; i++) {
+        s_phones[i].conn = NO_CONN;
+    }
+    ble_set_ota_cb(ota_chunk);
     esp_reset_reason_t why = esp_reset_reason();
-    esp_err_t err = ble_start(s_name, why == ESP_RST_POWERON || why == ESP_RST_USB);
+    bool reset = why == ESP_RST_POWERON && cfg_quick_power_ons() >= QUICK_POWER_ONS_RESET;
+    if (reset) {
+        cfg_quick_power_ons_clear();
+    }
+    esp_err_t err = ble_start(s_name, why == ESP_RST_POWERON || why == ESP_RST_USB, reset);
     if (err != ESP_OK) {
         events_add('E', "BT_ERROR", "%s", esp_err_to_name(err));
     }

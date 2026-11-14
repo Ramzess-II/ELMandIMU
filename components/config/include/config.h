@@ -23,6 +23,13 @@ void cfg_init(const char *default_bt_pin, int default_imu_odr, bool power_on);
 // По этому числу приложение узнаёт, что блок могли переставить и нужна калибровка.
 uint32_t cfg_power_ons(void);
 
+// Power-ons in a row, each ended before a minute passed and before a phone linked. The third one erases the phones of
+// the box (spec BLE-16): the way back for an owner who has lost all of them.
+#define QUICK_POWER_ONS_RESET 3
+uint32_t cfg_quick_power_ons(void);
+// The box has run a minute or a phone has linked: this power-on is not a quick one.
+void cfg_quick_power_ons_clear(void);
+
 // Текущие значения. Настройки «сразу» меняются командой SET на ходу, остальные — после перезагрузки.
 const char *cfg_get_str(const char *key);
 int         cfg_get_int(const char *key);
@@ -42,6 +49,17 @@ const char *cfg_car_get(const char *key, char *out, size_t size);
 // CAR_SET: writes the value only if it differs, an empty one erases the key.
 // Returns NULL or the error of the reply: "KEY", "VALUE", "FULL", "NVS".
 const char *cfg_car_set(const char *key, const char *value);
+
+// Phones paired with the box (spec 9.5, BT_LIST): the name each one sends in HELLO and the Unix time it gave when it
+// connected, by its Bluetooth identity address "AA:BB:CC:DD:EE:FF", in their own NVS namespace.
+#define PHONE_NVS_NAMESPACE "nogps_ph"
+#define PHONE_NAME_MAX      20
+
+// False if the box has no record of the phone. |seen| is 0 if the phone has not told the time.
+bool cfg_phone_get(const char *addr, char *name, size_t size, uint32_t *seen);
+void cfg_phone_set(const char *addr, const char *name, uint32_t seen);
+// NULL erases the records of all phones.
+void cfg_phone_erase(const char *addr);
 
 #ifdef __cplusplus
 }

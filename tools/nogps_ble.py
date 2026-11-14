@@ -4,7 +4,8 @@
 Ищет блок по UUID сервиса, подключается, шлёт HELLO раз в секунду и печатает строки блока.
 Команды вводятся с клавиатуры:
   CAL_UP, CAL_BIAS, CAL_RESET, STATUS, INFO, EVENTS,1, IMU_TEST, SET,data_hz,20, SET,bt_pin,654321,
-  REBOOT, BT_PAIR (на 2 минуты разрешить привязку ещё одного телефона), BT_FORGET
+  REBOOT, BT_PAIR,<6 цифр> (на 2 хвилини дозволити один новий телефон з цим кодом), BT_LIST,
+  BT_FORGET,<адреса> (забути один телефон), BT_FORGET (забути всі)
 По умолчанию NGD печатается раз в секунду, ключ --all печатает все.
 
     pip install bleak
@@ -18,7 +19,8 @@
 Перед первым подключением ноутбук надо привязать к блоку средствами системы (Windows: Параметры →
 Bluetooth → Добавить устройство; Linux: bluetoothctl pair). Система спросит код из шести цифр — это
 настройка bt_pin, по умолчанию 123456. Блок принимает новую привязку только в «окне сопряжения»:
-первые 2 минуты после подачи питания или после команды BT_PAIR с уже привязанного телефона.
+2 хвилини після подачі живлення на блок без телефонів, або після команди BT_PAIR,<код> з уже
+прив'язаного телефону — тоді код той, що в команді.
 """
 import argparse
 import asyncio
@@ -84,9 +86,10 @@ async def find(name):
 class Link:
     """Соединение: HELLO раз в секунду, сборка строк из потока TX, ответы на команды."""
 
-    def __init__(self, client, show_all):
+    def __init__(self, client, show_all, phone="laptop"):
         self.client = client
         self.show_all = show_all
+        self.phone = phone
         self.seq = 0
         self.buf = b""
         self.ngd = 0
@@ -153,7 +156,7 @@ class Link:
         while self.client.is_connected:
             # Первая запись — с ответом: если связь ещё не зашифрована, блок откажет, и система сама
             # начнёт шифрование или сопряжение. Запись без ответа он молча отбросил бы.
-            await self.send("HELLO", response=self.seq == 0)
+            await self.send(f"HELLO,{self.phone},{int(time.time())}", response=self.seq == 0)
             await asyncio.sleep(1)
 
 
@@ -228,7 +231,7 @@ async def run(args):
 
     async with BleakClient(dev) as client:
         print(f"подключился, MTU {client.mtu_size}")
-        link = Link(client, args.all)
+        link = Link(client, args.all, args.phone)
         await client.start_notify(TX, link.on_tx)
         hello = asyncio.create_task(link.hello_loop())
         await asyncio.sleep(1.5)        # дать пройти первому HELLO и строке NGI
@@ -251,6 +254,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", help="имя блока, например NoGPS-1B00; по умолчанию первый найденный")
     ap.add_argument("--all", action="store_true", help="печатать каждую NGD")
+    ap.add_argument("--phone", default="laptop", help="ім'я в HELLO, яке блок покаже в BT_LIST")
     ap.add_argument("--ota", metavar="ФАЙЛ", help="отправить блоку прошивку (.bin) и выйти")
     asyncio.run(run(ap.parse_args()))
 
