@@ -11,8 +11,10 @@
 #define TAG "config"
 #define VALUE_MAX 64
 #define KEY_POWER_ONS "power_ons"
+#define KEY_QUICK_ONS "quick_ons"
 
 static uint32_t s_power_ons;
+static uint32_t s_quick_ons;
 
 typedef enum { T_STR, T_INT, T_FLOAT } type_t;
 
@@ -99,9 +101,12 @@ static void count_power_on(bool power_on)
         return;
     }
     nvs_get_u32(h, KEY_POWER_ONS, &s_power_ons);
+    nvs_get_u32(h, KEY_QUICK_ONS, &s_quick_ons);
     if (power_on) {
         s_power_ons++;
-        if (nvs_set_u32(h, KEY_POWER_ONS, s_power_ons) != ESP_OK || nvs_commit(h) != ESP_OK) {
+        s_quick_ons++;
+        if (nvs_set_u32(h, KEY_POWER_ONS, s_power_ons) != ESP_OK ||
+            nvs_set_u32(h, KEY_QUICK_ONS, s_quick_ons) != ESP_OK || nvs_commit(h) != ESP_OK) {
             ESP_LOGE(TAG, "счётчик включений не записан");
         }
     }
@@ -111,6 +116,27 @@ static void count_power_on(bool power_on)
 uint32_t cfg_power_ons(void)
 {
     return s_power_ons;
+}
+
+uint32_t cfg_quick_power_ons(void)
+{
+    return s_quick_ons;
+}
+
+void cfg_quick_power_ons_clear(void)
+{
+    if (s_quick_ons == 0) {
+        return;
+    }
+    s_quick_ons = 0;
+    nvs_handle_t h;
+    if (nvs_open(CONFIG_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    if (nvs_set_u32(h, KEY_QUICK_ONS, 0) != ESP_OK || nvs_commit(h) != ESP_OK) {
+        ESP_LOGE(TAG, "quick power-ons: NVS write failed");
+    }
+    nvs_close(h);
 }
 
 void cfg_init(const char *default_bt_pin, int default_imu_odr, bool power_on)
@@ -291,4 +317,73 @@ const char *cfg_car_set(const char *key, const char *value)
     // The place of the car is not logged.
     ESP_LOGI(TAG, "car %s: %u bytes", key, (unsigned)strlen(value));
     return NULL;
+}
+
+// ---- phones ----
+
+// The NVS key of a phone: its address without the colons, 12 characters.
+static bool phone_key(const char *addr, char key[13])
+{
+    int n = 0;
+    for (const char *p = addr; *p && n < 12; p++) {
+        if (*p != ':') {
+            key[n++] = *p;
+        }
+    }
+    key[n] = '\0';
+    return n == 12;
+}
+
+bool cfg_phone_get(const char *addr, char *name, size_t size, uint32_t *seen)
+{
+    name[0] = '\0';
+    *seen = 0;
+    char key[13];
+    nvs_handle_t h;
+    if (!phone_key(addr, key) || nvs_open(PHONE_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    // "<seen>|<name>"
+    char v[PHONE_NAME_MAX + 16];
+    size_t len = sizeof(v);
+    esp_err_t err = nvs_get_str(h, key, v, &len);
+    nvs_close(h);
+    if (err != ESP_OK) {
+        return false;
+    }
+    char *bar = strchr(v, '|');
+    *seen = strtoul(v, NULL, 10);
+    strlcpy(name, bar ? bar + 1 : "", size);
+    return true;
+}
+
+void cfg_phone_set(const char *addr, const char *name, uint32_t seen)
+{
+    char key[13];
+    nvs_handle_t h;
+    if (!phone_key(addr, key) || nvs_open(PHONE_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    char v[PHONE_NAME_MAX + 16];
+    snprintf(v, sizeof(v), "%lu|%s", (unsigned long)seen, name);
+    if (nvs_set_str(h, key, v) != ESP_OK || nvs_commit(h) != ESP_OK) {
+        ESP_LOGE(TAG, "phone %s: NVS write failed", key);
+    }
+    nvs_close(h);
+}
+
+void cfg_phone_erase(const char *addr)
+{
+    char key[13];
+    nvs_handle_t h;
+    if ((addr && !phone_key(addr, key)) || nvs_open(PHONE_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    if (addr) {
+        nvs_erase_key(h, key);
+    } else {
+        nvs_erase_all(h);
+    }
+    nvs_commit(h);
+    nvs_close(h);
 }
