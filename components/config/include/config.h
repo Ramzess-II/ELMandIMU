@@ -3,6 +3,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -29,6 +30,18 @@ float       cfg_get_float(const char *key);
 
 // SET: ESP_ERR_NOT_FOUND — нет такого ключа, ESP_ERR_INVALID_ARG — неверное значение.
 esp_err_t cfg_set(const char *key, const char *value);
+
+// Values of the car the app keeps on the box for every phone in the car (spec 9.5, 12): opaque strings in their own
+// NVS namespace. CAL_RESET and BT_FORGET leave them, a firmware update keeps them.
+#define CAR_NVS_NAMESPACE "nogps_car"
+#define CAR_KEYS_MAX      16
+#define CAR_VALUE_MAX     200
+
+// CAR_GET: |out| gets the value, empty if the box has none. Returns NULL or the error of the reply: "KEY", "NVS".
+const char *cfg_car_get(const char *key, char *out, size_t size);
+// CAR_SET: writes the value only if it differs, an empty one erases the key.
+// Returns NULL or the error of the reply: "KEY", "VALUE", "FULL", "NVS".
+const char *cfg_car_set(const char *key, const char *value);
 
 #ifdef __cplusplus
 }

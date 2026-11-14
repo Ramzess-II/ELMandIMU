@@ -301,7 +301,7 @@ static void send_ngi(void)
     send_line(proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s,%lu",
                          PROTO_VERSION, u.version, u.build, CONFIG_IDF_TARGET, CONFIG_NOGPS_BOARD,
                          s_id, (unsigned long)(flash / 1024), (unsigned long)u.max_image, u.slot,
-                         u.slot_state, u.can_update ? "BLE OTA" : "BLE",
+                         u.slot_state, u.can_update ? "BLE OTA CAR" : "BLE CAR",
                          (unsigned long)cfg_power_ons()));
 }
 
@@ -507,6 +507,26 @@ static void handle_cmd(char **f, int n, int64_t now)
         esp_err_t err = cfg_set(f[3], f[4]);
         send_reply(seq, err == ESP_OK ? "OK" : err == ESP_ERR_NOT_FOUND ? "ERR,KEY"
                                              : err == ESP_ERR_INVALID_ARG ? "ERR,VALUE" : "ERR,NVS");
+    } else if (strcmp(cmd, "CAR_GET") == 0) {
+        static char v[CAR_VALUE_MAX + 1];
+        static char r[CAR_VALUE_MAX + 8];
+        const char *err = n < 4 ? "KEY" : cfg_car_get(f[3], v, sizeof(v));
+        if (err) {
+            snprintf(r, sizeof(r), "ERR,%s", err);
+        } else if (v[0]) {
+            snprintf(r, sizeof(r), "OK,%s", v);
+        } else {
+            strlcpy(r, "OK", sizeof(r));
+        }
+        send_reply(seq, r);
+    } else if (strcmp(cmd, "CAR_SET") == 0) {
+        // "CAR_SET,key," erases the key: its value is the empty fifth field.
+        const char *err = n < 4 ? "KEY" : n < 5 ? "VALUE" : cfg_car_set(f[3], f[4]);
+        char r[16] = "OK";
+        if (err) {
+            snprintf(r, sizeof(r), "ERR,%s", err);
+        }
+        send_reply(seq, r);
     } else if (strcmp(cmd, "OTA_BEGIN") == 0) {
         ota_begin(f, n, seq);
     } else if (strcmp(cmd, "OTA_END") == 0) {

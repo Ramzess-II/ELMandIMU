@@ -193,3 +193,102 @@ esp_err_t cfg_set(const char *key, const char *value)
     ESP_LOGI(TAG, "%s = %s%s", key, value, it->now ? "" : " (после перезагрузки)");
     return ESP_OK;
 }
+
+// ---- values of the car ----
+
+// An NVS key: 1-15 characters.
+static bool car_key_ok(const char *key)
+{
+    size_t len = strlen(key);
+    return len >= 1 && len <= 15 && strspn(key, "abcdefghijklmnopqrstuvwxyz0123456789_") == len;
+}
+
+// Printable ASCII without the separators of a line.
+static bool car_value_ok(const char *v)
+{
+    if (strlen(v) > CAR_VALUE_MAX) {
+        return false;
+    }
+    for (const char *p = v; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || c > 0x7E || c == ',' || c == '*' || c == '$') {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int car_count(void)
+{
+    int n = 0;
+    nvs_iterator_t it = NULL;
+    esp_err_t err = nvs_entry_find(NVS_DEFAULT_PART_NAME, CAR_NVS_NAMESPACE, NVS_TYPE_STR, &it);
+    while (err == ESP_OK) {
+        n++;
+        err = nvs_entry_next(&it);
+    }
+    nvs_release_iterator(it);
+    return n;
+}
+
+const char *cfg_car_get(const char *key, char *out, size_t size)
+{
+    out[0] = '\0';
+    if (!car_key_ok(key)) {
+        return "KEY";
+    }
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(CAR_NVS_NAMESPACE, NVS_READONLY, &h);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        return NULL;    // nothing written yet
+    }
+    if (err != ESP_OK) {
+        return "NVS";
+    }
+    size_t len = size;
+    err = nvs_get_str(h, key, out, &len);
+    nvs_close(h);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        out[0] = '\0';
+        return NULL;
+    }
+    return err == ESP_OK ? NULL : "NVS";
+}
+
+const char *cfg_car_set(const char *key, const char *value)
+{
+    if (!car_key_ok(key)) {
+        return "KEY";
+    }
+    if (!car_value_ok(value)) {
+        return "VALUE";
+    }
+    // The app writes every few minutes while the car drives: the same value is not written to the flash again.
+    char old[CAR_VALUE_MAX + 1];
+    if (cfg_car_get(key, old, sizeof(old))) {
+        return "NVS";
+    }
+    if (strcmp(old, value) == 0) {
+        ESP_LOGI(TAG, "car %s: unchanged", key);
+        return NULL;
+    }
+    if (!old[0] && car_count() >= CAR_KEYS_MAX) {
+        return "FULL";
+    }
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(CAR_NVS_NAMESPACE, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        err = value[0] ? nvs_set_str(h, key, value) : nvs_erase_key(h, key);
+        if (err == ESP_OK) {
+            err = nvs_commit(h);
+        }
+        nvs_close(h);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "car %s: NVS write: %s", key, esp_err_to_name(err));
+        return "NVS";
+    }
+    // The place of the car is not logged.
+    ESP_LOGI(TAG, "car %s: %u bytes", key, (unsigned)strlen(value));
+    return NULL;
+}
