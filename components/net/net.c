@@ -968,7 +968,7 @@ esp_err_t net_start(const char *fw_version)
     // Новый телефон привязывается только в «окне сопряжения». Оно открывается, когда на блок подали
     // питание или его перезагрузили через USB: и то и другое требует доступа к блоку.
     // Новый телефон привязывается в окне сопряжения after a power-on only while the box has no phones. Three quick
-    // power-ons in a row erase them all (BLE-16).
+    // power-ons in a row open the recovery window: a new phone paired in it replaces all the old ones (BLE-16).
     for (int i = 0; i < BLE_LINKS; i++) {
         s_phones[i].conn = NO_CONN;
     }

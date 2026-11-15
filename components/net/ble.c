@@ -82,8 +82,13 @@ static bool s_code_once;
 static portMUX_TYPE s_code_lock = portMUX_INITIALIZER_UNLOCKED;
 static volatile int s_bonds;
 static int s_fails;
-// Done once the stack is up: the box was powered on, erase the phones.
+// Done once the stack is up: the box was powered on, open the recovery window.
 static bool s_power_window, s_reset;
+// Окно восстановления (BLE-16): открыто тремя быстрыми включениями. Телефоны блока стираются, только когда в нём
+// привязался новый; закрылось без привязки — ничего не изменилось. Меняется в задаче стека и в ble_pair_open.
+static volatile bool s_recovery;
+
+static bool recovery_open(void);
 
 // ---- окно сопряжения ----
 
@@ -106,6 +111,11 @@ static bool pairing_allowed(void)
 static bool full(void)
 {
     return s_bonds >= BLE_MAX_BONDS;
+}
+
+static bool recovery_open(void)
+{
+    return s_recovery && pairing_allowed();
 }
 
 static link_t *link_find(uint16_t conn)
@@ -147,6 +157,17 @@ static void gate(void)
     ble_hs_cfg.sm_sec_lvl = pairing_allowed() ? 3 : 1;
 }
 
+// Окно сопряжения закрывается сразу, его код больше не действует.
+static void window_close(void)
+{
+    s_recovery = false;
+    taskENTER_CRITICAL(&s_code_lock);
+    s_code[0] = '\0';
+    s_window_until = now_s();
+    taskEXIT_CRITICAL(&s_code_lock);
+    gate();
+}
+
 static void pair_failed(int status)
 {
     s_fails++;
@@ -160,10 +181,11 @@ static void pair_failed(int status)
 }
 
 // Штатная обработка освобождает место под новую привязку, удаляя самую старую. A full box refuses a new phone
-// before this (PASSKEY_ACTION): a paired phone is removed only on purpose, by BT_FORGET.
+// before this (PASSKEY_ACTION): a paired phone is removed only on purpose, by BT_FORGET. Исключение — окно
+// восстановления: ключи пишутся уже после верного кода, а старые телефоны сразу после этого стираются все.
 static int on_store_status(struct ble_store_status_event *ev, void *arg)
 {
-    if (ev->event_code == BLE_STORE_EVENT_OVERFLOW) {
+    if (ev->event_code == BLE_STORE_EVENT_OVERFLOW && !recovery_open()) {
         ESP_LOGW(TAG, "нет места для привязки");
         return BLE_HS_ENOMEM;
     }
@@ -186,6 +208,37 @@ static void count_bonds(void)
 }
 
 // ---- реклама и соединение ----
+
+// В окне восстановления привязался новый телефон: все остальные стираются, их связи рвутся, окно закрывается.
+// Зовётся из задачи стека.
+static void recovery_done(const ble_addr_t *keep, uint16_t keep_conn)
+{
+    ble_addr_t peers[BLE_MAX_BONDS];
+    int n = 0, erased = 0;
+    if (ble_store_util_bonded_peers(peers, &n, BLE_MAX_BONDS) == 0) {
+        for (int i = 0; i < n; i++) {
+            if (ble_addr_cmp(&peers[i], keep) == 0) {
+                continue;
+            }
+            for (int k = 0; k < BLE_LINKS; k++) {
+                struct ble_gap_conn_desc d;
+                if (s_links[k].conn != BLE_HS_CONN_HANDLE_NONE && s_links[k].conn != keep_conn &&
+                    ble_gap_conn_find(s_links[k].conn, &d) == 0 && ble_addr_cmp(&d.peer_id_addr, &peers[i]) == 0) {
+                    ble_gap_terminate(s_links[k].conn, BLE_ERR_REM_USER_CONN_TERM);
+                }
+            }
+            if (ble_store_util_delete_peer(&peers[i]) == 0) {
+                char a[BLE_ADDR_LEN];
+                addr_str(&peers[i], a);
+                cfg_phone_erase(a);
+                erased++;
+            }
+        }
+    }
+    count_bonds();
+    window_close();
+    events_add('W', "BT_RESET", "%d", erased);
+}
 
 static int gap_event(struct ble_gap_event *ev, void *arg);
 
@@ -388,16 +441,20 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             // A new phone has no name until its HELLO: drop the record of a phone forgotten with the same address.
             cfg_phone_erase(a);
             events_add('I', "BT_PAIRED", "%s bonds %d", a, (int)s_bonds);
-            if (s_code_once) {
-                taskENTER_CRITICAL(&s_code_lock);
-                s_code[0] = '\0';
-                s_window_until = now_s();
-                taskEXIT_CRITICAL(&s_code_lock);
-                gate();
+            if (recovery_open()) {
+                recovery_done(&d.peer_id_addr, ev->enc_change.conn_handle);
+            } else if (s_code_once) {
+                window_close();
             }
         } else {
             ESP_LOGI(TAG, "связь зашифрована через %lu мс после соединения",
                      (unsigned long)(l->secure_ms - l->at_ms));
+            if (recovery_open()) {
+                // Подключился привязанный телефон: владелец рядом, восстанавливать нечего (например, три
+                // перезагрузки от стартера). Окно закрывается, телефоны остаются.
+                window_close();
+                ESP_LOGI(TAG, "окно восстановления закрыто: подключился привязанный телефон");
+            }
         }
         return 0;
     }
@@ -438,7 +495,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         l = link_find(ev->passkey.conn_handle);
         if (ev->passkey.params.action != BLE_SM_IOACT_DISP || !pairing_allowed() || !l || !s_code[0]) {
             ble_gap_terminate(ev->passkey.conn_handle, BLE_ERR_AUTH_FAIL);
-        } else if (full() && !l->peer_bonded) {
+        } else if (full() && !l->peer_bonded && !recovery_open()) {
             // A new phone doesn't push out a paired one.
             events_add('W', "BT_FULL", "%d", (int)s_bonds);
             ble_gap_terminate(ev->passkey.conn_handle, BLE_ERR_AUTH_FAIL);
@@ -543,12 +600,11 @@ static void on_sync(void)
     // Once, at the first start of the stack after a power-on.
     if (s_reset) {
         s_reset = false;
-        int was = s_bonds;
-        if (ble_store_clear() == 0) {
-            cfg_phone_erase(NULL);
-            count_bonds();
-            events_add('W', "BT_RESET", "%d", was);
-        }
+        s_power_window = false;
+        // Телефоны пока остаются: их сотрёт только привязка нового в этом окне (recovery_done).
+        ble_pair_open(BLE_PAIR_WINDOW, NULL);
+        s_recovery = true;
+        ESP_LOGW(TAG, "окно восстановления: привязка нового телефона сотрёт %d старых", (int)s_bonds);
     }
     if (s_power_window) {
         s_power_window = false;
@@ -799,6 +855,7 @@ void ble_pair_open(int seconds, const char *code)
     s_code_once = code != NULL;
     s_window_until = now_s() + seconds;
     taskEXIT_CRITICAL(&s_code_lock);
+    s_recovery = false;     // BT_PAIR с привязанного телефона — обычное окно, старые телефоны остаются
     gate();
     events_add('I', "BT_PAIR_OPEN", "%d s%s", seconds, code ? " code" : "");
 }

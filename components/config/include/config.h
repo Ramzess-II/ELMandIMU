@@ -23,8 +23,9 @@ void cfg_init(const char *default_bt_pin, int default_imu_odr, bool power_on);
 // По этому числу приложение узнаёт, что блок могли переставить и нужна калибровка.
 uint32_t cfg_power_ons(void);
 
-// Power-ons in a row, each ended before a minute passed and before a phone linked. The third one erases the phones of
-// the box (spec BLE-16): the way back for an owner who has lost all of them.
+// Power-ons in a row, each ended before a minute passed and before a phone linked. The third one opens the recovery
+// window (spec BLE-16): the way back for an owner who has lost all phones. Телефоны стираются, только когда в этом
+// окне привязался новый.
 #define QUICK_POWER_ONS_RESET 3
 uint32_t cfg_quick_power_ons(void);
 // The box has run a minute or a phone has linked: this power-on is not a quick one.
