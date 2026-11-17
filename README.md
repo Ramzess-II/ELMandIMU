@@ -382,7 +382,8 @@ python tools/nogps_ble.py
 | `NGE` | блок → телефон | События и ошибки |
 | `NGI` | блок → телефон, после первого `HELLO` и по команде `INFO` | Версия и дата сборки, чип и плата, размер флеша, наибольший образ, рабочий раздел и подтверждён ли он, сколько раз блок включали питанием |
 | `NGO` | блок → телефон, во время обновления | Сколько байт прошивки принято и состояние приёма |
-| `NGC` | телефон → блок | Команды: `HELLO`, `CAL_UP`, `CAL_BIAS`, `SET`, `EVENTS`, `INFO`, `BT_PAIR`, `BT_LIST`, `BT_FORGET`, `CAR_GET`, `CAR_SET`, `OTA_BEGIN`, `OTA_END`, `OTA_ABORT`, `REBOOT` и другие |
+| `NGC` | телефон → блок | Команды: `HELLO`, `CAL_UP`, `CAL_BIAS`, `SET`, `EVENTS`, `INFO`, `BT_PAIR`, `BT_LIST`, `BT_FORGET`, `CAR_GET`, `CAR_SET`, `OTA_BEGIN`, `OTA_END`, `OTA_ABORT`, `REBOOT`, `PEER` и другие |
+| `NGX` | block → the other phones, on `PEER,<payload>` | `$NGX,1,<payload>`: the line one phone gave to `PEER`, for the other connected phone. No `NGA` reply; never sent back to the sender; the payload is printable ASCII without `*` and `$`, 1 to 200 characters, else dropped. `PEER` is in the `caps` of `NGI` |
 | `NGA` | блок → телефон | Ответ на команду: `OK`, `ERR,<код>`, `PROGRESS,<%>` |
 
 ```
