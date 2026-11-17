@@ -324,6 +324,8 @@ static void ota_begin(uint16_t from, char **f, int n, int seq)
     const char *err;
     if (n < 6) {
         err = "VALUE";
+    } else if (ble_link_mtu(from) <= 0) {
+        err = "LINK";           // the link is gone: do not start an update nobody can receive
     } else if (s_restart_at) {
         err = "BUSY";           // обновление только что принято, блок перезагружается
     } else if (motion_speed_kmh() > 0) {
