@@ -228,13 +228,13 @@ static void recovery_done(const ble_addr_t *keep, uint16_t keep_conn)
                 }
             }
             if (ble_store_util_delete_peer(&peers[i]) == 0) {
-                char a[BLE_ADDR_LEN];
-                addr_str(&peers[i], a);
-                cfg_phone_erase(a);
                 erased++;
             }
         }
     }
+    // The new phone has no record yet. Erasing all also drops the records of bonds that NimBLE deleted itself
+    // on a full store (BLE_STORE_EVENT_OVERFLOW).
+    cfg_phone_erase(NULL);
     count_bonds();
     window_close();
     events_add('W', "BT_RESET", "%d", erased);
@@ -289,7 +289,10 @@ static void advertise(void)
     if (rc == 0) {
         rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &p, gap_event, NULL);
     }
-    if (rc != 0 && rc != BLE_HS_EALREADY) {
+    if (rc == BLE_HS_ENOMEM) {
+        // No free connection slot yet (a link is being set up); the next tick restarts advertising.
+        ESP_LOGW(TAG, "advertising not started: no memory, retry");
+    } else if (rc != 0 && rc != BLE_HS_EALREADY) {
         ESP_LOGE(TAG, "реклама не запустилась: %d", rc);
     }
 }
