@@ -20,6 +20,12 @@ int proto_line(char *buf, size_t size, const char *fmt, ...) __attribute__((form
 // Заменяет в текстовом поле запятые, '*' и непечатаемые символы на пробел (PR-2).
 void proto_clean_text(char *s);
 
+// Checks the line like proto_parse but does not split it: |body| is the text between '$' and '*'.
+bool proto_check(char *line, char **body);
+
+// Cuts the |body| of proto_check into fields in place. false if there are more than |max|.
+bool proto_split(char *body, char **fields, int max, int *n);
+
 // Проверяет строку и режет её на поля на месте. fields[0] — тип строки ("NGC").
 // false, если нет '$', '*', CRC не сходится или полей больше max.
 bool proto_parse(char *line, char **fields, int max, int *n);

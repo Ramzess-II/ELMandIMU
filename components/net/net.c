@@ -38,6 +38,7 @@
 #define BQ_LEN            12        // строк в очереди для Bluetooth
 #define QUICK_RUN_US      60000000  // a power-on that has run this long is not a quick one (BLE-16)
 #define SEEN_WRITE_S      3600      // the time a phone was seen is written to the flash not more often
+#define PEER_MAX          200       // longest PEER payload
 #define NO_CONN           0xFFFE    // not BLE_TO_ALL: a line to nobody is dropped
 
 // Биты NGD, которые не знает motion (9.3).
@@ -185,7 +186,8 @@ static void send_line(uint16_t to, int len)
         return;
     }
     bq_flush();
-    bool droppable = strncmp(s_out, "$NGD", 4) == 0 || strncmp(s_out, "$NGT", 4) == 0;
+    bool droppable = strncmp(s_out, "$NGD", 4) == 0 || strncmp(s_out, "$NGT", 4) == 0 ||
+                     strncmp(s_out, "$NGX", 4) == 0;
     if (!droppable) {
         bq_put(to, s_out, len);
         bq_flush();
@@ -308,7 +310,7 @@ static void send_ngi(uint16_t to)
     send_line(to, proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s,%lu",
                          PROTO_VERSION, u.version, u.build, CONFIG_IDF_TARGET, CONFIG_NOGPS_BOARD,
                          s_id, (unsigned long)(flash / 1024), (unsigned long)u.max_image, u.slot,
-                         u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI" : "BLE CAR PHONES MULTI",
+                         u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI PEER" : "BLE CAR PHONES MULTI PEER",
                          (unsigned long)cfg_power_ons()));
 }
 
@@ -768,6 +770,39 @@ static void handle_cmd(uint16_t from, char **f, int n, int64_t now)
     }
 }
 
+// PEER,<payload>: the payload goes as $NGX,1,<payload> to the other phones, never back, with no reply. It does
+// not change the box, so either phone may send it. A bad payload is dropped. |p| is the text after "PEER,".
+static void relay_peer(uint16_t from, const char *p)
+{
+    size_t len = strlen(p);
+    if (len == 0 || len > PEER_MAX || strpbrk(p, "*$")) {
+        return;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (p[i] < 0x20 || p[i] > 0x7E) {
+            return;
+        }
+    }
+    int n = proto_line(s_out, sizeof(s_out), "NGX,%d,%s", PROTO_VERSION, p);
+    for (int i = 0; i < BLE_LINKS; i++) {
+        uint16_t to = s_phones[i].conn;
+        if (to != NO_CONN && to != from) {
+            send_line(to, n);
+        }
+    }
+}
+
+// "NGC,<seq>,PEER,": its payload has any number of commas, so the line is not split into fields.
+static const char *peer_payload(const char *body)
+{
+    if (strncmp(body, "NGC,", 4) != 0) {
+        return NULL;
+    }
+    const char *p = body + 4;
+    p += strspn(p, "0123456789");
+    return strncmp(p, ",PEER,", 6) == 0 && p > body + 4 ? p + 6 : NULL;
+}
+
 // Обычно одна строка на запись (BLE-5), но разрезать по \n не мешает.
 static void handle_lines(uint16_t from, char *buf, int64_t now)
 {
@@ -775,7 +810,14 @@ static void handle_lines(uint16_t from, char *buf, int64_t now)
     for (char *line = strtok_r(buf, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
         char *f[8];
         int n;
-        if (proto_parse(line, f, 8, &n)) {
+        char *body;
+        if (!proto_check(line, &body)) {
+            continue;
+        }
+        const char *peer = peer_payload(body);
+        if (peer) {
+            relay_peer(from, peer);
+        } else if (proto_split(body, f, 8, &n)) {
             handle_cmd(from, f, n, now);
         }
     }

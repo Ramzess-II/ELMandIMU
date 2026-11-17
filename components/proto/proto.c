@@ -47,7 +47,7 @@ void proto_clean_text(char *s)
     }
 }
 
-bool proto_parse(char *line, char **fields, int max, int *n)
+bool proto_check(char *line, char **body)
 {
     // Пробелы и \r\n по краям.
     while (*line && isspace((unsigned char)*line)) {
@@ -70,8 +70,20 @@ bool proto_parse(char *line, char **fields, int max, int *n)
         return false;
     }
     *star = '\0';
+    *body = line + 1;
+    return true;
+}
+
+bool proto_parse(char *line, char **fields, int max, int *n)
+{
+    char *body;
+    return proto_check(line, &body) && proto_split(body, fields, max, n);
+}
+
+bool proto_split(char *body, char **fields, int max, int *n)
+{
+    char *p = body;
     int k = 0;
-    char *p = line + 1;
     for (;;) {
         if (k == max) {
             return false;
