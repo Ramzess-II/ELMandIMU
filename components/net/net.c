@@ -191,10 +191,14 @@ static void send_line(uint16_t to, int len)
     if (!droppable) {
         bq_put(to, s_out, len);
         bq_flush();
-    } else if (s_bq_count) {
-        s_bt_drops++;       // сначала должны уйти строки из очереди
-    } else if (ble_send(to, s_out, len) == 0) {
-        s_bt_drops++;
+    } else {
+        // NGX may be lost when the queue is busy: that is normal peer traffic, not a link fault, so it is not counted.
+        bool peer = strncmp(s_out, "$NGX", 4) == 0;
+        if (s_bq_count) {
+            s_bt_drops += !peer;       // сначала должны уйти строки из очереди
+        } else if (ble_send(to, s_out, len) == 0) {
+            s_bt_drops += !peer;
+        }
     }
 }
 
@@ -792,11 +796,11 @@ static void handle_cmd(uint16_t from, char **f, int n, int64_t now)
 }
 
 // PEER,<payload>: the payload goes as $NGX,1,<payload> to the other phones, never back, with no reply. It does
-// not change the box, so either phone may send it. A bad payload is dropped. |p| is the text after "PEER,".
+// not change the box, so either phone may send it, but only after HELLO. A bad payload is dropped. |p| is the text after "PEER,".
 static void relay_peer(uint16_t from, const char *p)
 {
     size_t len = strlen(p);
-    if (len == 0 || len > PEER_MAX || strpbrk(p, "*$")) {
+    if (!phone_find(from) || len == 0 || len > PEER_MAX || strpbrk(p, "*$")) {
         return;
     }
     for (size_t i = 0; i < len; i++) {
