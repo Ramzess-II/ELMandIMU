@@ -554,7 +554,21 @@ static void ota_chunk(uint16_t conn, const uint8_t *msg, size_t len)
     }
 }
 
-// BT_LIST: OK,<addr>|<name>|<Unix time seen>|<1 if this link>;...,<1 if this link changes the box>
+// The link of the phone that sent HELLO first, NO_CONN when no phone did.
+static uint16_t owner_conn(void)
+{
+    const phone_t *first = NULL;
+    for (int i = 0; i < BLE_LINKS; i++) {
+        const phone_t *p = &s_phones[i];
+        if (p->conn != NO_CONN && (!first || p->since < first->since)) {
+            first = p;
+        }
+    }
+    return first ? first->conn : NO_CONN;
+}
+
+// BT_LIST: OK,<addr>|<name>|<Unix time seen>|<1 if this link>|<1 if the box takes changes from it>;...,
+// <1 if this link changes the box>
 static void list_phones(uint16_t from, int seq)
 {
     char addrs[BLE_MAX_BONDS][BLE_ADDR_LEN];
@@ -565,6 +579,11 @@ static void list_phones(uint16_t from, int seq)
     }
     char me[BLE_ADDR_LEN] = "";
     ble_link_addr(from, me);
+    char owner[BLE_ADDR_LEN] = "";
+    uint16_t owner_link = owner_conn();
+    if (owner_link != NO_CONN) {
+        ble_link_addr(owner_link, owner);
+    }
     static char r[PROTO_LINE_MAX];
     size_t len = strlcpy(r, "OK,", sizeof(r));
     for (int i = 0; i < k && len < sizeof(r); i++) {
@@ -573,8 +592,8 @@ static void list_phones(uint16_t from, int seq)
         if (cfg_phone_get(addrs[i], name, sizeof(name), &t) && t) {
             snprintf(seen, sizeof(seen), "%lu", (unsigned long)t);
         }
-        len += snprintf(r + len, sizeof(r) - len, "%s%s|%s|%s|%d", i ? ";" : "", addrs[i], name, seen,
-                        strcasecmp(addrs[i], me) == 0);
+        len += snprintf(r + len, sizeof(r) - len, "%s%s|%s|%s|%d|%d", i ? ";" : "", addrs[i], name, seen,
+                        strcasecmp(addrs[i], me) == 0, owner[0] && strcasecmp(addrs[i], owner) == 0);
     }
     if (len < sizeof(r)) {
         snprintf(r + len, sizeof(r) - len, ",%d", is_owner(from));
