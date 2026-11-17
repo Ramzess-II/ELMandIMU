@@ -305,11 +305,11 @@ static void send_ngi(uint16_t to)
     update_get_info(&u);
     uint32_t flash = 0;
     esp_flash_get_size(NULL, &flash);
-    send_line(to, proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s,%lu",
+    send_line(to, proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s,%lu,%s",
                          PROTO_VERSION, u.version, u.build, CONFIG_IDF_TARGET, CONFIG_NOGPS_BOARD,
                          s_id, (unsigned long)(flash / 1024), (unsigned long)u.max_image, u.slot,
                          u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI" : "BLE CAR PHONES MULTI",
-                         (unsigned long)cfg_power_ons()));
+                         (unsigned long)cfg_power_ons(), CONFIG_NOGPS_HW_REVISION));
 }
 
 // ---- обновление прошивки (раздел 18) ----
