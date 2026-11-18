@@ -34,6 +34,7 @@ typedef struct {
     int32_t  acc_h1_mms2;   // среднее вдоль горизонтальной оси 1
     int32_t  acc_h2_mms2;   // среднее вдоль горизонтальной оси 2
     int32_t  acc_up_mms2;   // среднее вдоль «вверх» минус 9.81 м/с²
+    int      shake_pct;     // spread of the samples in % of the stillness limits, -1 if unknown (NGD 15)
     int32_t  jolt_mms2;     // наибольшее отклонение вдоль «вверх» от среднего за интервал, без знака
 } motion_packet_t;
 

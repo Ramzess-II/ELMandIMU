@@ -243,10 +243,15 @@ static void send_ngd(void)
         snprintf(acc, sizeof(acc), "%ld,%ld,%ld,%ld", (long)p.acc_h1_mms2, (long)p.acc_h2_mms2,
                  (long)p.acc_up_mms2, (long)p.jolt_mms2);
     }
-    int len = proto_line(s_out, sizeof(s_out), "NGD,%d,%lu,%lu,%lld,%ld,%llu,%d,%d,%lX,%s",
+    // Field 15: the shake of the box, with the IMU working whether the vertical is calibrated or not.
+    char shake[12] = "";
+    if (p.shake_pct >= 0 && (flags & FLAG_IMU_OK)) {
+        snprintf(shake, sizeof(shake), "%d", p.shake_pct);
+    }
+    int len = proto_line(s_out, sizeof(s_out), "NGD,%d,%lu,%lu,%lld,%ld,%llu,%d,%d,%lX,%s,%s",
                          PROTO_VERSION, (unsigned long)s_seq++, (unsigned long)p.t_ms,
                          (long long)p.yaw_mdeg, (long)p.rate_mdps, (unsigned long long)p.dist_mm,
-                         p.speed_kmh, p.speed_age_ms, (unsigned long)flags, acc);
+                         p.speed_kmh, p.speed_age_ms, (unsigned long)flags, acc, shake);
     send_line(BLE_TO_ALL, len);
 }
 

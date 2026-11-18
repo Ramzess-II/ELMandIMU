@@ -55,6 +55,8 @@ typedef struct {
     double acc[3];          // ускорение
 } stats_t;
 
+#define SHAKE_PCT_MAX   9999        // NGD field 15 is capped, a fall of the box is not a number to show
+
 typedef enum { AZ_IDLE, AZ_M1, AZ_M2, AZ_REFINE } az_state_t;
 
 // ---- состояние imu_task ----
@@ -92,6 +94,7 @@ static int     s_acc_n;
 static float   s_acc_up_min, s_acc_up_max;
 static int64_t s_bias_t_us = -1;
 static float   s_shake_gyro, s_shake_acc;
+static stats_t s_pkt;               // samples since the last publication, for the shake of the packet
 
 static struct {
     bool         active;
@@ -131,6 +134,7 @@ static struct {
     int64_t      bias_t_us;
     float        bias_up_dps;
     float        shake_gyro, shake_acc;
+    stats_t      pkt;           // samples of the packet: the shake of NGD field 15
 } s_pub = {.bias_t_us = -1};
 static calib_data_t s_save_copy;
 
@@ -711,6 +715,7 @@ void motion_on_samples(const imu_sample_t *s, int n, void *ctx)
             s_block_t0 = x->t_us;
         }
         stats_add(&s_block, x);
+        stats_add(&s_pkt, x);
         if (x->t_us - s_block_t0 >= BLOCK_US) {
             block_done(x, speed, speed_t, nonzero_t);
             memset(&s_block, 0, sizeof(s_block));
@@ -750,7 +755,9 @@ void motion_on_samples(const imu_sample_t *s, int n, void *ctx)
     s_pub.bias_up_dps = up_dps(s_cal.bias);
     s_pub.shake_gyro = s_shake_gyro;
     s_pub.shake_acc = s_shake_acc;
+    stats_merge(&s_pub.pkt, &s_pkt);
     taskEXIT_CRITICAL(&s_lock);
+    memset(&s_pkt, 0, sizeof(s_pkt));
     s_rate_sum = 0;
     s_rate_n = 0;
     s_acc_sum[0] = s_acc_sum[1] = s_acc_sum[2] = 0;
@@ -808,6 +815,8 @@ void motion_take_packet(motion_packet_t *out)
     }
     s_pub.acc_sum[0] = s_pub.acc_sum[1] = s_pub.acc_sum[2] = 0;
     s_pub.acc_n = 0;
+    stats_t pkt = s_pub.pkt;
+    memset(&s_pub.pkt, 0, sizeof(s_pub.pkt));
     out->yaw_mdeg = llround(s_pub.yaw_deg * 1000);
     out->rate_mdps = (int32_t)lround(rate * 1000);
     out->dist_mm = (uint64_t)s_pub.dist_mm;
@@ -827,6 +836,18 @@ void motion_take_packet(motion_packet_t *out)
         out->speed_age_ms = -1;
     }
     taskEXIT_CRITICAL(&s_lock);
+
+    // The spread of the samples of the packet against the limits of the stillness (6.1, items 1 and 2): 100 is at
+    // them. Outside the lock: the config is read.
+    out->shake_pct = -1;
+    if (pkt.n >= 2) {
+        double shake = sd(pkt.a, pkt.a2, pkt.n) / cfg_get_float("still_acc");
+        double gyro_lim = cfg_get_float("still_gyro") * DEG2RAD;
+        for (int k = 0; k < 3; k++) {
+            shake = fmax(shake, sd(pkt.g[k], pkt.g2[k], pkt.n) / gyro_lim);
+        }
+        out->shake_pct = (int)fmin(lround(shake * 100), SHAKE_PCT_MAX);
+    }
 }
 
 void motion_get_status(motion_status_t *out)
