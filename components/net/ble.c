@@ -836,7 +836,13 @@ void ble_poll(void)
         if (adv_flags() != s_adv_flags) {
             set_adv_data();
         }
-        advertise();    // no-op while advertising or full; retries after a failed start
+        // Повтор рекламы после неудачного запуска: только когда стек синхронизировался (до on_sync адреса ещё
+        // нет и запуск всегда падает) и не чаще раза в секунду, чтобы ошибка не сыпалась в лог на каждом проходе.
+        static uint32_t adv_retry_at;
+        if (ble_hs_synced() && now != adv_retry_at) {
+            adv_retry_at = now;
+            advertise();    // no-op while advertising or full
+        }
         for (int i = 0; i < BLE_LINKS; i++) {
             link_t *l = &s_links[i];
             if (l->conn == BLE_HS_CONN_HANDLE_NONE) {
