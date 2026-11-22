@@ -244,6 +244,9 @@ static void recovery_done(const ble_addr_t *keep, uint16_t keep_conn)
     }
     count_bonds();
     window_close();
+    // The code was typed on a phone, maybe seen by others: the next recovery needs a new one.
+    char code[CFG_RECOVERY_CODE_LEN + 1];
+    cfg_recovery_code(code, true);
     events_add('W', "BT_RESET", "%d", erased);
 }
 
@@ -492,12 +495,9 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_REPEAT_PAIRING:
-        // Привязанный телефон сопрягается заново (на нём привязку удалили). Сюда доходит только при
-        // открытом окне сопряжения: при закрытом запрос отклонён раньше.
-        if (ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d) == 0) {
-            ble_store_util_delete_peer(&d.peer_id_addr);
-            count_bonds();
-        }
+        // A paired phone pairs again (it deleted the bond). Only an open window gets here: the request is refused
+        // earlier otherwise. The old bond stays until the new one is stored over it: a wrong code or a cancel
+        // must not leave the phone unpaired on the box.
         return BLE_GAP_REPEAT_PAIRING_RETRY;
 
     case BLE_GAP_EVENT_PASSKEY_ACTION:
@@ -611,10 +611,16 @@ static void on_sync(void)
     if (s_reset) {
         s_reset = false;
         s_power_window = false;
-        // Телефоны пока остаются: их сотрёт только привязка нового в этом окне (recovery_done).
-        ble_pair_open(BLE_PAIR_WINDOW, NULL);
-        s_recovery = true;
-        ESP_LOGW(TAG, "окно восстановления: привязка нового телефона сотрёт %d старых", (int)s_bonds);
+        // The phones stay for now: only a new one bonded in this window erases them (recovery_done). The window takes
+        // the recovery code, not bt_pin; the code goes to the UART only, so it takes the box in the hand and a cable.
+        char code[CFG_RECOVERY_CODE_LEN + 1];
+        if (cfg_recovery_code(code, false)) {
+            ble_pair_open(BLE_PAIR_WINDOW, code);
+            s_recovery = true;
+            ESP_LOGW(TAG, "recovery window, code %s: a new phone erases the %d old", code, (int)s_bonds);
+        } else {
+            ESP_LOGE(TAG, "recovery window stays shut: no recovery code");
+        }
     }
     if (s_power_window) {
         s_power_window = false;
