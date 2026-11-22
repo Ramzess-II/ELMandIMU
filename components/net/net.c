@@ -47,7 +47,7 @@
 #define FLAG_ERROR      0x400
 
 static const char *s_fw;
-static char s_id[5];            // XXXX из имени NoGPS-XXXX
+static char s_id[5];            // XXXX из имени NonGPS-XXXX
 static char s_name[16];
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static net_state_t s_state;
@@ -1029,13 +1029,13 @@ void net_set_radio(bool on)
 esp_err_t net_start(const char *fw_version)
 {
     s_fw = fw_version;
-    // NET-9, BLE-2: NoGPS-XXXX, XXXX — два последних байта адреса, который был у точки доступа Wi-Fi
-    // блока. Wi-Fi в блоке больше нет, а имя и номер прежние: по ним телефон узнаёт привязанный блок
-    // и помнит его счётчик включений. Адрес берётся из eFuse, радио для этого не нужно.
+    // NET-9, BLE-2: NonGPS-XXXX (до версии 7 NoGPS-XXXX), XXXX — два последних байта адреса, который был у
+    // точки доступа Wi-Fi блока. Номер прежний: по нему телефон помнит счётчик включений блока. Адрес берётся
+    // из eFuse, радио для этого не нужно.
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     snprintf(s_id, sizeof(s_id), "%02X%02X", mac[4], mac[5]);
-    snprintf(s_name, sizeof(s_name), "NoGPS-%s", s_id);
+    snprintf(s_name, sizeof(s_name), "NonGPS-%s", s_id);
 
     // Новый телефон привязывается только в «окне сопряжения». Оно открывается, когда на блок подали
     // питание или его перезагрузили через USB: и то и другое требует доступа к блоку.
