@@ -279,7 +279,7 @@ static void power_task(void *arg)
                 radio = want;
                 // Имена событий остались от Wi-Fi: на них написаны журналы и разборщики.
                 events_add('I', want ? "WIFI_ON" : "WIFI_OFF", "%s rpm %d %d mV",
-                           want ? "engine on" : "engine off", obd.rpm, v);
+                           !trusted ? "no trusted divider" : want ? "engine on" : "engine off", obd.rpm, v);
             }
             if (!trusted && !untrusted_logged) {
                 untrusted_logged = true;
