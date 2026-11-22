@@ -357,6 +357,10 @@ static void power_task(void *arg)
             if (why) {
                 parked = false;
                 radio = true;
+                // A wake restarts the cap (the engine may have just started) and the lockout debounce.
+                engine_off_since = 0;
+                over_cap = false;
+                lock_since = 0;
                 keep_until = now + (int64_t)off_s * 1000000;
                 obd_set_paused(false);
                 events_add('I', "WIFI_ON", "%s %d mV", why, v);
