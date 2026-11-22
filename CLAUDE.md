@@ -7,7 +7,8 @@ started here does not see them, so the ones that matter for firmware are repeate
 ## Build and flash
 
 - `. ~/esp/esp-idf/export.sh` (ESP-IDF 5.5), then `idf.py build`; ESP32-C3:
-  `idf.py -B build_c3 -D SDKCONFIG=sdkconfig.c3 -D IDF_TARGET=esp32c3 build`. `idf.py -p <port> flash monitor` writes the whole image (not `app-flash`).
+  `idf.py -B build_c3 -D SDKCONFIG=sdkconfig.c3 -D IDF_TARGET=esp32c3 build`.
+  `idf.py -p <port> flash monitor` writes the whole image (not `app-flash`).
 - The image is signed. Without `keys/nogps_signing_key.pem` build unsigned: turn off "Require signed app images" in
   `menuconfig`. Never commit `keys/`.
 - `README.md` (Russian, written by the owner) has the details: wiring, signing, release (`tools/make_release.py`).
