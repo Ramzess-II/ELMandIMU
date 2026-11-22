@@ -273,17 +273,17 @@ static void power_task(void *arg)
             if (keep_until == 0 || running || no_source || update_hold_awake()) {
                 keep_until = now + (int64_t)off_s * 1000000;
             }
-            bool want = off_s == 0 || now < keep_until;
+            // Без подтверждённого делителя будить радио нечем: ни стоянки, ни роста напряжения.
+            bool want = off_s == 0 || !trusted || now < keep_until;
             if (want != radio) {
                 radio = want;
                 // Имена событий остались от Wi-Fi: на них написаны журналы и разборщики.
                 events_add('I', want ? "WIFI_ON" : "WIFI_OFF", "%s rpm %d %d mV",
                            want ? "engine on" : "engine off", obd.rpm, v);
             }
-            if (!radio && !trusted && !untrusted_logged) {
+            if (!trusted && !untrusted_logged) {
                 untrusted_logged = true;
-                ESP_LOGW(TAG, "делитель напряжения не подтверждён — на стоянку и в сон не ухожу, "
-                              "жду двигатель по опросу машины");
+                ESP_LOGW(TAG, "делитель напряжения не подтверждён — радио не выключаю, на стоянку и в сон не ухожу");
             }
             // На стоянку — только если есть чем проснуться. Уровень засыпания — в памяти.
             if (!radio && trusted) {
