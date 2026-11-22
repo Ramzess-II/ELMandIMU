@@ -887,7 +887,7 @@ void ble_poll(void)
             link_steps(l);
             // Чужой, который подключился и молчит, не должен занимать соединение вечно.
             int deadline = pairing_allowed() ? SECURE_DEADLINE_S : UNPAIRED_DEADLINE_S;
-            if (!l->secure && now - l->at_s >= deadline) {
+            if (!l->secure && !l->pairing && now - l->at_s >= deadline) {
                 ESP_LOGW(TAG, "проверка не пройдена за %d с — отключаю", deadline);
                 log_unsecure(l);
                 ble_gap_terminate(l->conn, BLE_ERR_REM_USER_CONN_TERM);
