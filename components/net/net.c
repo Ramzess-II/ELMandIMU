@@ -1029,7 +1029,7 @@ void net_set_radio(bool on)
 esp_err_t net_start(const char *fw_version)
 {
     s_fw = fw_version;
-    // NET-9, BLE-2: NonGPS-XXXX (до версии 7 NoGPS-XXXX), XXXX — два последних байта адреса, который был у
+    // NET-9, BLE-2: NonGPS-XXXX (0.4.4 and older: NoGPS-XXXX), XXXX — два последних байта адреса, который был у
     // точки доступа Wi-Fi блока. Номер прежний: по нему телефон помнит счётчик включений блока. Адрес берётся
     // из eFuse, радио для этого не нужно.
     uint8_t mac[6];
