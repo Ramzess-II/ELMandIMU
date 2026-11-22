@@ -48,7 +48,8 @@ static item_t s_items[] = {
     {"wifi_off_s",    "60",   T_INT,   0, 3600,    true, "", 0},
     // Через сколько секунд после остановки двигателя усыпить ESP32 и гироскоп (блок просыпается раз
     // в 2 с измерить напряжение); 0 — не усыплять.
-    {"sleep_after_s", "600",  T_INT,   0, 86400,   true, "", 0},
+    // Above 3600 means nothing: the box sleeps an hour after the engine stops whatever this says.
+    {"sleep_after_s", "600",  T_INT,   0, 3600,    true, "", 0},
 };
 #define N_ITEMS (sizeof(s_items) / sizeof(s_items[0]))
 

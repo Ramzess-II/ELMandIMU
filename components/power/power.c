@@ -42,6 +42,11 @@
 #define LOW_MV           11800      // LOW_VOLTAGE
 #define LOW_REARM_MV     12200
 #define LOW_US           60000000
+#define LOCK_MV          11000      // BATT_LOCK: below this for LOCK_US with the engine not running
+#define LOCK_US          10000000   // the cranking dip is under a second, so it never gets here
+// No setting keeps the box awake longer than this after the engine stopped (shorter on the bench).
+#define AWAKE_MAX_US       ((int64_t)3600 * 1000000)
+#define AWAKE_MAX_BENCH_US ((int64_t)120 * 1000000)
 #define NVS_KEY          "vcal"
 
 typedef struct {
@@ -141,6 +146,16 @@ static void cal_save(const cal_t *c)
 
 // ---- стоянка и сон ----
 
+// Battery lockout: the event, a second for it to reach the phone and UART0, then deep sleep with no
+// wake source. Only a power cycle brings the box back.
+static void batt_lock(int v)
+{
+    events_add('W', "BATT_LOCK", "%d mV", v);
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    esp_deep_sleep_start();
+}
+
 // Уровень стоянки в памяти: вниз идёт за напряжением быстро (после остановки двигателя оно ещё
 // несколько минут сползает), вверх — очень медленно, чтобы запуск двигателя был виден как скачок.
 static void track_base(float *base, int v, float down, float up)
@@ -150,12 +165,13 @@ static void track_base(float *base, int v, float down, float up)
 
 // Лёгкий сон ESP32: процессор стоит, память цела, гироскоп усыплён. Раз в 2 с — проснуться, измерить
 // напряжение, уснуть. Возвращает причину пробуждения.
-static const char *sleep_until_wake(float *base)
+static const char *sleep_until_wake(float *base, bool capped)
 {
-    events_add('I', "SLEEP", "%d mV", (int)*base);
+    events_add('I', "SLEEP", "%d mV%s", (int)*base, capped ? " engine off 1 h" : "");
     imu_set_suspended(true);
     vTaskDelay(pdMS_TO_TICKS(500));
     const char *why = NULL;
+    int64_t lock_since = 0;
     while (!why) {
         esp_sleep_enable_timer_wakeup(SLEEP_PERIOD_US);
         if (esp_light_sleep_start() != ESP_OK) {
@@ -166,7 +182,18 @@ static const char *sleep_until_wake(float *base)
 
         int nom = adc_read(false);
         int v = nom >= 0 ? (int)(nom * s_k) : -1;
-        if (cfg_get_int("sleep_after_s") == 0 || cfg_get_int("wifi_off_s") == 0) {
+        // A battery that runs down during the sleep locks the box out too: the sleep is where it happens.
+        if (v >= 0 && v < LOCK_MV) {
+            int64_t t = esp_timer_get_time();
+            if (lock_since == 0) {
+                lock_since = t;
+            } else if (t - lock_since >= LOCK_US) {
+                batt_lock(v);
+            }
+        } else {
+            lock_since = 0;
+        }
+        if (!capped && (cfg_get_int("sleep_after_s") == 0 || cfg_get_int("wifi_off_s") == 0)) {
             why = "saving off";
         } else if (v < 0) {
             why = "no voltage";
@@ -194,7 +221,7 @@ static void power_task(void *arg)
 
     bool parked = false, radio = true;
     bool verified = false, mismatch_reported = false, untrusted_logged = false, low_reported = false;
-    int64_t keep_until = 0, parked_since = 0, mismatch_since = 0, low_since = 0, last_save = 0;
+    int64_t engine_off_since = 0, lock_since = 0, keep_until = 0, parked_since = 0, mismatch_since = 0, low_since = 0, last_save = 0;
     uint32_t ref_seq = 0;
     float acc_sum = 0, base = 0;
     int acc_n = 0, acc_src = 0;
@@ -266,6 +293,18 @@ static void power_task(void *arg)
         bool running = obd.engine == OBD_ENGINE_RUN;
         obd_engine_t engine = running ? OBD_ENGINE_RUN : no_source ? OBD_ENGINE_UNKNOWN : OBD_ENGINE_OFF;
 
+        // The cap: wifi_off_s = 0 and sleep_after_s = 0 switch the saving off only until it.
+        // Not asked about the engine (UNKNOWN) or running: no cap.
+        if (engine == OBD_ENGINE_OFF) {
+            if (engine_off_since == 0) {
+                engine_off_since = now;
+            }
+        } else {
+            engine_off_since = 0;
+        }
+        int64_t cap_us = cfg_get_int("bench") ? AWAKE_MAX_BENCH_US : AWAKE_MAX_US;
+        bool over_cap = engine_off_since && now - engine_off_since >= cap_us;
+
         if (!parked) {
             // Работа. Радио держится первую минуту после старта и минуту после остановки двигателя.
             // Прошивка после обновления ещё не подтверждена — тоже держим: к ней должен успеть
@@ -274,12 +313,14 @@ static void power_task(void *arg)
                 keep_until = now + (int64_t)off_s * 1000000;
             }
             // Без подтверждённого делителя будить радио нечем: ни стоянки, ни роста напряжения.
-            bool want = off_s == 0 || !trusted || now < keep_until;
+            // The cap wins over the untrusted divider for the radio only: parking still needs trust.
+            bool want = !over_cap && (off_s == 0 || !trusted || now < keep_until);
             if (want != radio) {
                 radio = want;
                 // Имена событий остались от Wi-Fi: на них написаны журналы и разборщики.
                 events_add('I', want ? "WIFI_ON" : "WIFI_OFF", "%s rpm %d %d mV",
-                           !trusted ? "no trusted divider" : want ? "engine on" : "engine off", obd.rpm, v);
+                           want && !trusted ? "no trusted divider" : want ? "engine on" : over_cap ? "engine off 1 h" : "engine off",
+                           obd.rpm, v);
             }
             if (!trusted && !untrusted_logged) {
                 untrusted_logged = true;
@@ -299,14 +340,14 @@ static void power_task(void *arg)
             int sleep_s = cfg_get_int("sleep_after_s");
             // sleep_after_s считается от остановки двигателя, стоянка началась на off_s позже.
             int64_t sleep_at = parked_since + (int64_t)(sleep_s > off_s ? sleep_s - off_s : 0) * 1000000;
-            if (off_s == 0) {
+            if (off_s == 0 && !over_cap) {
                 why = "saving off";
             } else if (!trusted) {
                 why = "no voltage";
             } else if (v - base >= RISE_MV) {
                 why = "voltage rise";
-            } else if (sleep_s && now >= sleep_at && !s_radio_on) {
-                why = sleep_until_wake(&base);
+            } else if ((over_cap || (sleep_s && now >= sleep_at)) && !s_radio_on) {
+                why = sleep_until_wake(&base, over_cap);
                 now = esp_timer_get_time();
                 nom = adc_read(false);
                 v = nom >= 0 ? (int)(nom * s_k) : -1;
@@ -335,6 +376,17 @@ static void power_task(void *arg)
             if (v >= LOW_REARM_MV) {
                 low_reported = false;
             }
+        }
+
+        // Flat battery: the box would not leave the car able to start. The divider must be trusted.
+        if (trusted && !running && v < LOCK_MV) {
+            if (lock_since == 0) {
+                lock_since = now;
+            } else if (now - lock_since >= LOCK_US) {
+                batt_lock(v);
+            }
+        } else {
+            lock_since = 0;
         }
 
         taskENTER_CRITICAL(&s_lock);
