@@ -246,7 +246,9 @@ static void recovery_done(const ble_addr_t *keep, uint16_t keep_conn)
     window_close();
     // The code was typed on a phone, maybe seen by others: the next recovery needs a new one.
     char code[CFG_RECOVERY_CODE_LEN + 1];
-    cfg_recovery_code(code, true);
+    if (!cfg_recovery_code(code, true)) {
+        ESP_LOGW(TAG, "the recovery code was not renewed");
+    }
     events_add('W', "BT_RESET", "%d", erased);
 }
 
