@@ -4,6 +4,7 @@
 Ищет блок по UUID сервиса, подключается, шлёт HELLO раз в секунду и печатает строки блока.
 Команды вводятся с клавиатуры:
   CAL_UP, CAL_BIAS, CAL_RESET, STATUS, INFO, EVENTS,1, IMU_TEST, SET,data_hz,20, SET,bt_pin,654321,
+  GET,data_hz (read a setting), GET (the settings that are not at their default),
   REBOOT, BT_PAIR,<6 цифр> (на 2 хвилини дозволити один новий телефон з цим кодом), BT_LIST,
   BT_FORGET,<адреса> (забути один телефон), BT_FORGET (забути всі)
 По умолчанию NGD печатается раз в секунду, ключ --all печатает все.

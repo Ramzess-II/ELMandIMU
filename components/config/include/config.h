@@ -36,6 +36,13 @@ const char *cfg_get_str(const char *key);
 int         cfg_get_int(const char *key);
 float       cfg_get_float(const char *key);
 
+// GET,<key>: the value the box works with, as text; NULL if there is no such key. A setting that is not "now"
+// shows the old value until the reboot.
+const char *cfg_get(const char *key);
+// Bare GET: "key=value;..." of the settings that differ from their default, in the order of the table, written into
+// |out| of |size| bytes. What does not fit is replaced by ";+<N>" for the N keys left out. Empty if all are default.
+void cfg_get_changed(char *out, size_t size);
+
 // SET: ESP_ERR_NOT_FOUND — нет такого ключа, ESP_ERR_INVALID_ARG — неверное значение.
 esp_err_t cfg_set(const char *key, const char *value);
 
