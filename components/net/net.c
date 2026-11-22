@@ -25,7 +25,7 @@
 
 #define TAG "net"
 
-#define HELLO_TIMEOUT_US  3000000   // 9.2 п. 3
+#define HELLO_TIMEOUT_US  10000000  // 9.2 п. 3: no command from a phone for this long ends its session
 #define NGS_PERIOD_US     1000000
 #define IMU_TEST_US       10000000
 #define NGT_PERIOD_US     100000
@@ -536,7 +536,7 @@ static void forget_conn(uint16_t conn)
     }
 }
 
-// The phone has left: no HELLO for 3 s, or its link has dropped.
+// The phone has left: no command for HELLO_TIMEOUT_US, or its link has dropped.
 static void phones_tick(int64_t now)
 {
     s_phone = false;
@@ -550,7 +550,10 @@ static void phones_tick(int64_t now)
             if (p->conn == s_ota_conn) {
                 update_abort("LINK");   // обновление без телефона не продолжаем
             }
+            // The link of an aborted update stays the update's, so that ota_poll() sends NGO,ERR_LINK to it.
+            uint16_t ota = (p->conn == s_ota_conn && ble_link_up(p->conn)) ? s_ota_conn : NO_CONN;
             forget_conn(p->conn);
+            s_ota_conn = ota;
             p->conn = NO_CONN;
         } else {
             s_phone = true;
@@ -644,6 +647,11 @@ static void handle_cmd(uint16_t from, char **f, int n, int64_t now)
     }
     const char *cmd = f[2];
 
+    // Any valid command keeps the session: a lost HELLO is not a lost phone.
+    phone_t *ph = phone_find(from);
+    if (ph) {
+        ph->last_hello = now;
+    }
     if (strcmp(cmd, "HELLO") == 0) {
         hello(from, f, n, now);
         return;
@@ -656,7 +664,11 @@ static void handle_cmd(uint16_t from, char **f, int n, int64_t now)
         send_ngi(from);
         return;
     }
-    if (changes_box(cmd) && !is_owner(from)) {
+    // A phone that is not the owner may still remove itself from the box's phones.
+    char me[BLE_ADDR_LEN] = "";
+    bool forget_self = strcmp(cmd, "BT_FORGET") == 0 && n > 3 && ble_link_addr(from, me) &&
+                       strcasecmp(me, f[3]) == 0;
+    if (changes_box(cmd) && !forget_self && !is_owner(from)) {
         send_reply(from, seq, "ERR,BUSY");
         return;
     }
@@ -770,8 +782,7 @@ static void handle_cmd(uint16_t from, char **f, int n, int64_t now)
         }
     } else if (strcmp(cmd, "BT_FORGET") == 0 && n > 3) {
         // A phone that forgets itself gets the reply before its link drops.
-        char me[BLE_ADDR_LEN] = "";
-        bool self = ble_link_addr(from, me) && strcasecmp(me, f[3]) == 0;
+        bool self = forget_self;
         int rc = ble_forget_one(f[3], self ? from : NO_CONN);
         if (rc == 0) {
             events_add('I', "BT_FORGET", "%s", f[3]);

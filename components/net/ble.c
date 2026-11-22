@@ -23,11 +23,13 @@
 
 #define TAG "ble"
 
-#define SECURE_DEADLINE_S   60      // подключился и за минуту не прошёл проверку — отключить
+#define SECURE_DEADLINE_S   60      // not encrypted this long with the pairing window open: dropped
+#define UNPAIRED_DEADLINE_S 10      // the same with the window closed (BLE-11)
+#define UNSECURE_EVENT_MS   10000   // BT_UNSECURE not more often than this
 #define SECREQ_DELAY_MS     1500    // столько ждём, что телефон включит шифрование сам
 #define LOCKOUT_S           60      // пауза после трёх неверных кодов подряд
 #define MAX_FAILS           3
-#define RX_QUEUE            4
+#define RX_QUEUE            16      // 4 KB: the app sends up to 9 CAR_SET next to HELLO, and two phones share it
 #define MSYS_RESERVE        6       // столько буферов стека оставляем ему самому
 
 // Хвост у всех UUID одинаковый, отличается число n: 02CB000n-C0C3-40D0-819C-5A85998DCD99.
@@ -48,7 +50,9 @@ typedef struct {
 typedef struct {
     uint16_t conn;              // BLE_HS_CONN_HANDLE_NONE: the slot is free
     bool secure, subscribed, pairing;
-    bool peer_bonded, secreq_sent;
+    bool peer_bonded, secreq_sent, resolved, unsecure_logged;
+    int secreq_rc;              // the result of our own ble_gap_security_initiate(), valid with secreq_sent
+    int enc_status;             // the status of the last failed encryption, 0 if none
     uint8_t tune_step;          // сколько просьб о настройке связи уже отправлено
     uint16_t mtu;
     uint32_t at_s;              // секунды от включения
@@ -142,6 +146,31 @@ static void link_clear(link_t *l)
     memset(l, 0, sizeof(*l));
     l->conn = BLE_HS_CONN_HANDLE_NONE;
     l->mtu = BLE_ATT_MTU_DFLT;
+}
+
+// BT_UNSECURE: a link that ended, or was dropped by us, without ever being encrypted, outside the pairing window.
+// Once per link, and not more often than UNSECURE_EVENT_MS: it tells which side fails (#154).
+static void log_unsecure(link_t *l)
+{
+    static uint32_t last_ms;
+    uint32_t now = now_ms();
+    if (l->secure || l->pairing || l->unsecure_logged || pairing_allowed()) {
+        return;
+    }
+    l->unsecure_logged = true;
+    if (last_ms && now - last_ms < UNSECURE_EVENT_MS) {
+        return;
+    }
+    last_ms = now ? now : 1;
+    char sec[12] = "-", enc[12] = "-";
+    if (l->secreq_sent) {
+        snprintf(sec, sizeof(sec), "%d", l->secreq_rc);
+    }
+    if (l->enc_status) {
+        snprintf(enc, sizeof(enc), "%d", l->enc_status);
+    }
+    events_add('W', "BT_UNSECURE", "%lu bonded %d resolved %d secreq %s enc %s", (unsigned long)(now - l->at_ms),
+               l->peer_bonded, l->resolved, sec, enc);
 }
 
 static void addr_str(const ble_addr_t *a, char out[BLE_ADDR_LEN])
@@ -320,6 +349,7 @@ static void link_steps(link_t *l)
             (l->peer_bonded || pairing_allowed())) {
             l->secreq_sent = true;
             int rc = ble_gap_security_initiate(conn);
+            l->secreq_rc = rc;
             ESP_LOGI(TAG, "телефон шифрование не включил — прошу сам (%d)", rc);
         }
         return;
@@ -386,6 +416,8 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         if (ble_gap_conn_find(ev->connect.conn_handle, &d) == 0) {
             bool bonded = is_bonded(&d.peer_id_addr);
             l->peer_bonded = bonded;
+            // An identity address, not a private one the controller left unresolved.
+            l->resolved = d.peer_id_addr.type == BLE_ADDR_PUBLIC || (d.peer_id_addr.val[5] & 0xC0) == 0xC0;
             ESP_LOGI(TAG, "подключился %02X:%02X:%02X:%02X:%02X:%02X, %s, интервал %d.%02d мс, links %d",
                      d.peer_id_addr.val[5], d.peer_id_addr.val[4], d.peer_id_addr.val[3],
                      d.peer_id_addr.val[2], d.peer_id_addr.val[1], d.peer_id_addr.val[0],
@@ -408,6 +440,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         if (l->pairing) {
             pair_failed(ev->disconnect.reason);
         }
+        log_unsecure(l);
         link_clear(l);
         advertise();
         return 0;
@@ -427,6 +460,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             if (was_pairing) {
                 pair_failed(ev->enc_change.status);
             } else {
+                l->enc_status = ev->enc_change.status;
                 ESP_LOGW(TAG, "шифрование не включилось: %d", ev->enc_change.status);
             }
             return 0;
@@ -547,7 +581,9 @@ static int chr_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt 
             return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         }
         it.data[len] = '\0';
-        xQueueSend(s_rx, &it, 0);
+        if (xQueueSend(s_rx, &it, 0) != pdTRUE) {
+            return BLE_ATT_ERR_INSUFFICIENT_RES;    // a write with a response is refused, not acknowledged
+        }
     } else if (attr == s_ota_handle && s_ota_cb) {
         uint8_t msg[BLE_RX_MAX];
         uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
@@ -850,8 +886,10 @@ void ble_poll(void)
             }
             link_steps(l);
             // Чужой, который подключился и молчит, не должен занимать соединение вечно.
-            if (!l->secure && now - l->at_s >= SECURE_DEADLINE_S) {
-                ESP_LOGW(TAG, "проверка не пройдена за %d с — отключаю", SECURE_DEADLINE_S);
+            int deadline = pairing_allowed() ? SECURE_DEADLINE_S : UNPAIRED_DEADLINE_S;
+            if (!l->secure && now - l->at_s >= deadline) {
+                ESP_LOGW(TAG, "проверка не пройдена за %d с — отключаю", deadline);
+                log_unsecure(l);
                 ble_gap_terminate(l->conn, BLE_ERR_REM_USER_CONN_TERM);
                 l->at_s = now;
             }
