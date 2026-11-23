@@ -154,13 +154,13 @@ static void log_status(void)
     power_status_t pw;
     power_get_status(&pw);
     ESP_LOGI(TAG, "OBD %s | двигатель %s, обороты %d | сеть: АЦП %d мВ (%s, k %d), ELM %d, машина %d | "
-             "%s, уровень засыпания %d мВ, радио %s",
+             "%s, уровень засыпания %d мВ, радио %s (off_s %d, держать ещё %d с, parked %d, trusted %d)",
              obd_state_name(obd.state),
              pw.engine == OBD_ENGINE_RUN ? "работает" : pw.engine == OBD_ENGINE_OFF ? "заглушен"
                                                                                      : "неизвестно",
              obd.rpm, pw.adc_mv, pw.adc_trusted ? "подтверждён" : "не подтверждён", pw.k_milli,
              obd.voltage_mv, obd.ecu_mv, pw.parked ? "стоянка" : "работа", pw.base_mv,
-             s_radio ? "включено" : "выключено");
+             s_radio ? "включено" : "выключено", pw.off_s, pw.keep_s, pw.parked, pw.adc_trusted);
     ESP_LOGI(TAG, "Bluetooth %s | привязано телефонов %d%s | память: свободно %lu КБ, меньше всего было %lu КБ",
              !net.bt_up ? "выключен" : net.bt_link ? "телефон подключён"
                         : net.bt_conn ? "телефон подключается, связь ещё не зашифрована"

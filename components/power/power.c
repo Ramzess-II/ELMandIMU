@@ -412,6 +412,8 @@ static void power_task(void *arg)
         s_st.k_milli = k_milli;
         s_st.adc_trusted = trusted;
         s_st.base_mv = parked ? (int)base : 0;
+        s_st.off_s = off_s;
+        s_st.keep_s = !parked && keep_until > now ? (int)((keep_until - now) / 1000000) : 0;
         taskEXIT_CRITICAL(&s_lock);
     }
 }
