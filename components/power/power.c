@@ -56,7 +56,7 @@ typedef struct {
 } cal_t;
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
-static power_status_t s_st = {.radio = true, .adc_mv = -1, .k_milli = 1000};
+static power_status_t s_st = {.radio = true, .adc_mv = -1, .k_milli = 1000, .cap_s = -1};
 
 static adc_oneshot_unit_handle_t s_adc;
 static adc_cali_handle_t s_cali;
@@ -310,6 +310,7 @@ static void power_task(void *arg)
         }
         int64_t cap_us = cfg_get_int("bench") ? AWAKE_MAX_BENCH_US : AWAKE_MAX_US;
         bool over_cap = engine_off_since && now - engine_off_since >= cap_us;
+        bool hold = update_hold_awake();
 
         if (!parked) {
             // Работа. Радио держится первую минуту после старта и минуту после остановки двигателя.
@@ -319,7 +320,6 @@ static void power_task(void *arg)
             // otherwise the link would drop mid-transfer and the phone could not resume it. Both
             // are bounded (30 s without a chunk aborts, 10 min without a phone rolls back), and
             // the lockout below LOCK_MV still applies, so the battery is not left to the hold.
-            bool hold = update_hold_awake();
             if (keep_until == 0 || running || no_source || hold) {
                 keep_until = now + (int64_t)off_s * 1000000;
             }
@@ -404,6 +404,9 @@ static void power_task(void *arg)
             lock_since = 0;
         }
 
+        // The cap is the one reason that switches the radio off against every other field of the status.
+        int64_t cap_left = engine_off_since ? cap_us - (now - engine_off_since) : 0;
+
         taskENTER_CRITICAL(&s_lock);
         s_st.parked = parked;
         s_st.radio = radio;
@@ -412,6 +415,10 @@ static void power_task(void *arg)
         s_st.k_milli = k_milli;
         s_st.adc_trusted = trusted;
         s_st.base_mv = parked ? (int)base : 0;
+        s_st.off_s = off_s;
+        s_st.keep_s = !parked && keep_until > now ? (int)((keep_until - now) / 1000000) : 0;
+        s_st.cap_s = engine_off_since == 0 ? -1 : cap_left > 0 ? (int)(cap_left / 1000000) : 0;
+        s_st.hold = hold;
         taskEXIT_CRITICAL(&s_lock);
     }
 }

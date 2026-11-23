@@ -20,6 +20,10 @@ typedef struct {
     int          adc_mv;       // напряжение со своего делителя с поправкой, -1 если делителя нет
     int          k_milli;      // поправочный коэффициент делителя, тысячные (1000 — без поправки)
     bool         adc_trusted;  // делитель подтверждён эталоном, можно уходить на стоянку и в сон
+    int          off_s;        // wifi_off_s: how long the radio stays on after the engine stops, 0 — always
+    int          keep_s;       // seconds left until the radio may go off (keep_until); 0 — not held or parked
+    int          cap_s;        // seconds left until the 1 h awake cap; 0 — past it, -1 — not counting
+    bool         hold;         // a firmware update in flight keeps the radio on past the cap
     int          base_mv;      // уровень, запомненный при засыпании; 0 — блок не на стоянке
 } power_status_t;
 
