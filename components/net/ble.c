@@ -273,6 +273,11 @@ static void recovery_done(const ble_addr_t *keep, uint16_t keep_conn)
     }
     count_bonds();
     window_close();
+    // The code was typed on a phone, maybe seen by others: the next recovery needs a new one.
+    char code[CFG_RECOVERY_CODE_LEN + 1];
+    if (!cfg_recovery_code(code, true)) {
+        ESP_LOGW(TAG, "the recovery code was not renewed");
+    }
     events_add('W', "BT_RESET", "%d", erased);
 }
 
@@ -526,8 +531,9 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_REPEAT_PAIRING:
-        // Привязанный телефон сопрягается заново (на нём привязку удалили). Сюда доходит только при
-        // открытом окне сопряжения: при закрытом запрос отклонён раньше.
+        // A paired phone pairs again (it deleted the bond). Only an open window gets here: the request is refused
+        // earlier otherwise. The old bond has to go before RETRY: NimBLE reads the store again and silently
+        // ignores the request while the bond is there, so the phone would never pair.
         if (ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d) == 0) {
             ble_store_util_delete_peer(&d.peer_id_addr);
             count_bonds();
@@ -646,11 +652,21 @@ static void on_sync(void)
     // Once, at the first start of the stack after a power-on.
     if (s_reset) {
         s_reset = false;
-        s_power_window = false;
-        // Телефоны пока остаются: их сотрёт только привязка нового в этом окне (recovery_done).
-        ble_pair_open(BLE_PAIR_WINDOW, NULL);
-        s_recovery = true;
-        ESP_LOGW(TAG, "окно восстановления: привязка нового телефона сотрёт %d старых", (int)s_bonds);
+        // A box without phones has nothing to recover, and no phone could have read the recovery code: it keeps the
+        // power-on window with bt_pin (BLE-12) below.
+        if (s_bonds > 0) {
+            s_power_window = false;
+            // The phones stay for now: only a new one bonded in this window erases them (recovery_done). The window
+            // takes the recovery code, not bt_pin; the code goes to the UART only, so it takes the box and a cable.
+            char code[CFG_RECOVERY_CODE_LEN + 1];
+            if (cfg_recovery_code(code, false)) {
+                ble_pair_open(BLE_PAIR_WINDOW, code);
+                s_recovery = true;
+                ESP_LOGW(TAG, "recovery window, code %s: a new phone erases the %d old", code, (int)s_bonds);
+            } else {
+                ESP_LOGE(TAG, "recovery window stays shut: no recovery code");
+            }
+        }
     }
     if (s_power_window) {
         s_power_window = false;
