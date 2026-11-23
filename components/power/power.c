@@ -17,6 +17,7 @@
 #include "config.h"
 #include "events.h"
 #include "imu.h"
+#include "led.h"
 #include "update.h"
 
 #define TAG "power"
@@ -151,6 +152,11 @@ static void cal_save(const cal_t *c)
 static void batt_lock(int v)
 {
     events_add('W', "BATT_LOCK", "%d mV", v);
+    // The box must draw nothing once it is off. Deep sleep stops the ESP32 and no more: a WS2812
+    // holds its last frame, and the gyro keeps sampling until it is told to sleep. The second the
+    // event takes to leave is enough for both tasks to act.
+    led_shutdown();
+    imu_set_suspended(true);
     vTaskDelay(pdMS_TO_TICKS(1000));
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     esp_deep_sleep_start();

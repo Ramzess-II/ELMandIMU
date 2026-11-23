@@ -18,6 +18,7 @@
 
 static volatile led_base_t s_base = LED_OFF;
 static volatile int s_blinks;
+static volatile bool s_done;
 
 #if CONFIG_NOGPS_LED_WS2812
 static led_strip_handle_t s_strip;
@@ -104,6 +105,16 @@ esp_err_t led_start(void)
 
 void led_set(led_base_t base, int error_blinks)
 {
+    if (s_done) {
+        return;
+    }
     s_base = base;
     s_blinks = error_blinks;
+}
+
+void led_shutdown(void)
+{
+    s_base = LED_OFF;
+    s_blinks = 0;
+    s_done = true;      // led_task гасит светодиод в своём темпе, не позже чем через 100 мс
 }
