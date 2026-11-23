@@ -315,12 +315,17 @@ static void power_task(void *arg)
             // Работа. Радио держится первую минуту после старта и минуту после остановки двигателя.
             // Прошивка после обновления ещё не подтверждена — тоже держим: к ней должен успеть
             // подключиться телефон.
-            if (keep_until == 0 || running || no_source || update_hold_awake()) {
+            // An update in flight and an unconfirmed firmware hold the radio past the cap too:
+            // otherwise the link would drop mid-transfer and the phone could not resume it. Both
+            // are bounded (30 s without a chunk aborts, 10 min without a phone rolls back), and
+            // the lockout below LOCK_MV still applies, so the battery is not left to the hold.
+            bool hold = update_hold_awake();
+            if (keep_until == 0 || running || no_source || hold) {
                 keep_until = now + (int64_t)off_s * 1000000;
             }
             // Без подтверждённого делителя будить радио нечем: ни стоянки, ни роста напряжения.
             // The cap wins over the untrusted divider for the radio only: parking still needs trust.
-            bool want = !over_cap && (off_s == 0 || !trusted || now < keep_until);
+            bool want = (!over_cap || hold) && (off_s == 0 || !trusted || now < keep_until);
             if (want != radio) {
                 radio = want;
                 // Имена событий остались от Wi-Fi: на них написаны журналы и разборщики.
