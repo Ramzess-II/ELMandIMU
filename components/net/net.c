@@ -552,9 +552,12 @@ static void phones_tick(int64_t now)
                 update_abort("LINK");   // обновление без телефона не продолжаем
             }
             // The link of an aborted update stays the update's, so that ota_poll() sends NGO,ERR_LINK to it.
-            uint16_t ota = (p->conn == s_ota_conn && ble_link_up(p->conn)) ? s_ota_conn : NO_CONN;
+            // Only its own phone touches it: another phone leaving must not take the update's link away.
+            bool keep_ota = p->conn == s_ota_conn && ble_link_up(p->conn);
             forget_conn(p->conn);
-            s_ota_conn = ota;
+            if (keep_ota) {
+                s_ota_conn = p->conn;
+            }
             p->conn = NO_CONN;
         } else {
             s_phone = true;
