@@ -418,15 +418,58 @@ void cfg_phone_set(const char *addr, const char *name, uint32_t seen)
     nvs_close(h);
 }
 
+// The key of the phone is a blob under its name with "k" after it.
+static bool phone_auth_key(const char *addr, char key[14])
+{
+    if (!phone_key(addr, key)) {
+        return false;
+    }
+    strcat(key, "k");
+    return true;
+}
+
+bool cfg_phone_key_get(const char *addr, uint8_t key[PHONE_AUTH_KEY_LEN])
+{
+    char name[14];
+    nvs_handle_t h;
+    if (!phone_auth_key(addr, name) || nvs_open(PHONE_NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    size_t len = PHONE_AUTH_KEY_LEN;
+    esp_err_t err = nvs_get_blob(h, name, key, &len);
+    nvs_close(h);
+    return err == ESP_OK && len == PHONE_AUTH_KEY_LEN;
+}
+
+bool cfg_phone_key_set(const char *addr, const uint8_t key[PHONE_AUTH_KEY_LEN])
+{
+    char name[14];
+    nvs_handle_t h;
+    if (!phone_auth_key(addr, name) || nvs_open(PHONE_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return false;
+    }
+    esp_err_t err = nvs_set_blob(h, name, key, PHONE_AUTH_KEY_LEN);
+    if (err == ESP_OK) {
+        err = nvs_commit(h);
+    }
+    nvs_close(h);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "phone %s: key NVS write: %s", name, esp_err_to_name(err));
+    }
+    return err == ESP_OK;
+}
+
 void cfg_phone_erase(const char *addr)
 {
-    char key[13];
+    char key[13], auth[14];
     nvs_handle_t h;
-    if ((addr && !phone_key(addr, key)) || nvs_open(PHONE_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+    if ((addr && (!phone_key(addr, key) || !phone_auth_key(addr, auth))) ||
+        nvs_open(PHONE_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
         return;
     }
     if (addr) {
         nvs_erase_key(h, key);
+        nvs_erase_key(h, auth);
     } else {
         nvs_erase_all(h);
     }

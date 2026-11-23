@@ -72,8 +72,16 @@ const char *cfg_car_set(const char *key, const char *value);
 // False if the box has no record of the phone. |seen| is 0 if the phone has not told the time.
 bool cfg_phone_get(const char *addr, char *name, size_t size, uint32_t *seen);
 void cfg_phone_set(const char *addr, const char *name, uint32_t seen);
-// NULL erases the records of all phones.
+// NULL erases the records of all phones, with their keys.
 void cfg_phone_erase(const char *addr);
+
+// The key the phone gave the box to have it prove itself (spec 9.5, AUTH_SET): 16 bytes kept with the record of the
+// phone, so it goes away with the bond.
+#define PHONE_AUTH_KEY_LEN 16
+// False if the phone has no key.
+bool cfg_phone_key_get(const char *addr, uint8_t key[PHONE_AUTH_KEY_LEN]);
+// True if the key is written. A phone gives a key once: the caller checks cfg_phone_key_get first.
+bool cfg_phone_key_set(const char *addr, const uint8_t key[PHONE_AUTH_KEY_LEN]);
 
 #ifdef __cplusplus
 }
