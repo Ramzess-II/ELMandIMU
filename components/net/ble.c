@@ -616,16 +616,20 @@ static void on_sync(void)
     // Once, at the first start of the stack after a power-on.
     if (s_reset) {
         s_reset = false;
-        s_power_window = false;
-        // The phones stay for now: only a new one bonded in this window erases them (recovery_done). The window takes
-        // the recovery code, not bt_pin; the code goes to the UART only, so it takes the box in the hand and a cable.
-        char code[CFG_RECOVERY_CODE_LEN + 1];
-        if (cfg_recovery_code(code, false)) {
-            ble_pair_open(BLE_PAIR_WINDOW, code);
-            s_recovery = true;
-            ESP_LOGW(TAG, "recovery window, code %s: a new phone erases the %d old", code, (int)s_bonds);
-        } else {
-            ESP_LOGE(TAG, "recovery window stays shut: no recovery code");
+        // A box without phones has nothing to recover, and no phone could have read the recovery code: it keeps the
+        // power-on window with bt_pin (BLE-12) below.
+        if (s_bonds > 0) {
+            s_power_window = false;
+            // The phones stay for now: only a new one bonded in this window erases them (recovery_done). The window
+            // takes the recovery code, not bt_pin; the code goes to the UART only, so it takes the box and a cable.
+            char code[CFG_RECOVERY_CODE_LEN + 1];
+            if (cfg_recovery_code(code, false)) {
+                ble_pair_open(BLE_PAIR_WINDOW, code);
+                s_recovery = true;
+                ESP_LOGW(TAG, "recovery window, code %s: a new phone erases the %d old", code, (int)s_bonds);
+            } else {
+                ESP_LOGE(TAG, "recovery window stays shut: no recovery code");
+            }
         }
     }
     if (s_power_window) {
