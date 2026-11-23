@@ -319,7 +319,8 @@ static void send_ngi(uint16_t to)
     send_line(to, proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s,%lu,%s",
                          PROTO_VERSION, u.version, u.build, CONFIG_IDF_TARGET, CONFIG_NOGPS_BOARD,
                          s_id, (unsigned long)(flash / 1024), (unsigned long)u.max_image, u.slot,
-                         u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI PEER" : "BLE CAR PHONES MULTI PEER",
+                         u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI PEER RECOVERY"
+                                                       : "BLE CAR PHONES MULTI PEER RECOVERY",
                          (unsigned long)cfg_power_ons(), CONFIG_NOGPS_HW_REVISION));
 }
 
@@ -618,7 +619,7 @@ static void list_phones(uint16_t from, int seq)
 static bool changes_box(const char *cmd)
 {
     static const char *const k[] = {"SET", "CAL_BIAS", "CAL_UP", "CAL_UP2", "CAL_RESET", "CAL_FWD", "CAR_SET",
-                                    "OTA_BEGIN", "OTA_END", "OTA_ABORT", "BT_PAIR", "BT_FORGET", "REBOOT"};
+                                    "OTA_BEGIN", "OTA_END", "OTA_ABORT", "BT_PAIR", "BT_FORGET", "BT_RECOVERY", "REBOOT"};
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
         if (strcmp(cmd, k[i]) == 0) {
             return true;
@@ -789,6 +790,15 @@ static void handle_cmd(uint16_t from, char **f, int n, int64_t now)
             events_add('I', "BT_FORGET", "%d", was);
             send_reply(from, seq, "OK");
         }
+    } else if (strcmp(cmd, "BT_RECOVERY") == 0) {
+        // The code of the recovery window, for the owner phone to keep (BLE-16). It never goes into an event.
+        char code[CFG_RECOVERY_CODE_LEN + 1], r[16];
+        if (cfg_recovery_code(code, false)) {
+            snprintf(r, sizeof(r), "OK,%s", code);
+        } else {
+            strlcpy(r, "ERR,NVS", sizeof(r));
+        }
+        send_reply(from, seq, r);
     } else if (strcmp(cmd, "BT_LIST") == 0) {
         list_phones(from, seq);
     } else if (strcmp(cmd, "REBOOT") == 0) {

@@ -31,6 +31,12 @@ uint32_t cfg_quick_power_ons(void);
 // The box has run a minute or a phone has linked: this power-on is not a quick one.
 void cfg_quick_power_ons_clear(void);
 
+// The code of the recovery window (BLE-16): random, made on first use and kept in NVS. It replaces bt_pin there, so
+// a box in the hands of a stranger does not open to a code printed in the docs. `renew` makes a new one (the old one
+// was used). False when NVS can't keep it: the window then stays shut.
+#define CFG_RECOVERY_CODE_LEN 6
+bool cfg_recovery_code(char code[CFG_RECOVERY_CODE_LEN + 1], bool renew);
+
 // Текущие значения. Настройки «сразу» меняются командой SET на ходу, остальные — после перезагрузки.
 const char *cfg_get_str(const char *key);
 int         cfg_get_int(const char *key);
