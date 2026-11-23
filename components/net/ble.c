@@ -498,8 +498,12 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
 
     case BLE_GAP_EVENT_REPEAT_PAIRING:
         // A paired phone pairs again (it deleted the bond). Only an open window gets here: the request is refused
-        // earlier otherwise. The old bond stays until the new one is stored over it: a wrong code or a cancel
-        // must not leave the phone unpaired on the box.
+        // earlier otherwise. The old bond has to go before RETRY: NimBLE reads the store again and silently
+        // ignores the request while the bond is there, so the phone would never pair.
+        if (ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d) == 0) {
+            ble_store_util_delete_peer(&d.peer_id_addr);
+            count_bonds();
+        }
         return BLE_GAP_REPEAT_PAIRING_RETRY;
 
     case BLE_GAP_EVENT_PASSKEY_ACTION:
