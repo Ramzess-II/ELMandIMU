@@ -37,7 +37,7 @@ typedef struct {
     int  bonds;       // сколько телефонов привязано
 } ble_state_t;
 
-// name — имя в рекламе (NoGPS-XXXX). pair_window — the box was powered on: open the pairing window if it has no
+// name — имя в рекламе (NonGPS-XXXX). pair_window — the box was powered on: open the pairing window if it has no
 // phones. reset — открыть окно восстановления (BLE-16): окно с bt_pin даже у блока с телефонами; привязка нового
 // телефона в нём стирает все старые, без привязки ничего не меняется.
 esp_err_t ble_start(const char *name, bool pair_window, bool reset);
