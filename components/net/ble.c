@@ -912,8 +912,11 @@ void ble_poll(void)
                 log_unsecure(l);
                 ble_gap_terminate(l->conn, BLE_ERR_REM_USER_CONN_TERM);
                 l->at_s = now;
-            } else if (l->secure && now - l->last_rx_s >= IDLE_DEADLINE_S) {
+            } else if (l->secure && (int32_t)(now - l->last_rx_s) >= IDLE_DEADLINE_S) {
                 // A phone whose GATT client died while the link stayed up holds a slot, and two of them hide the box.
+                // The difference is signed: the host task writes last_rx_s without s_lock and can make it newer
+                // than `now` (a write to RX or OTA, or ENC_CHANGE, right after now_s()); an unsigned difference
+                // would wrap and drop a live link.
                 ESP_LOGW(TAG, "связь молчит %d с — отключаю", IDLE_DEADLINE_S);
                 events_add('W', "BT_IDLE", "%d s", IDLE_DEADLINE_S);
                 ble_gap_terminate(l->conn, BLE_ERR_REM_USER_CONN_TERM);
