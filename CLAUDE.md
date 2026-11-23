@@ -11,6 +11,8 @@ started here does not see them, so the ones that matter for firmware are repeate
   `idf.py -p <port> flash monitor` writes the whole image (not `app-flash`).
 - The image is signed. Without `keys/nogps_signing_key.pem` build unsigned: turn off "Require signed app images" in
   `menuconfig`. Never commit `keys/`.
+- CI (`.github/workflows/build.yml`) builds S3 and C3 on every PR and push to `main` with a throwaway signing key
+  generated in the job: its images are not for a box.
 - `README.md` (Russian, written by the owner) has the details: wiring, signing, release (`tools/make_release.py`).
 
 ## The protocol is shared with the app

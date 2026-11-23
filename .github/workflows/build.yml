@@ -1,0 +1,35 @@
+name: Build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: esp32s3
+            build_dir: build
+            sdkconfig: sdkconfig
+          - target: esp32c3
+            build_dir: build_c3
+            sdkconfig: sdkconfig.c3
+    steps:
+      - uses: actions/checkout@v4
+      # The real signing key is never in the repo: a throwaway one lets the signed-image build run.
+      # The image from this job is not for a box.
+      - name: Generate a throwaway signing key
+        run: |
+          mkdir -p keys
+          openssl genrsa -out keys/nogps_signing_key.pem 3072
+      - name: Build ${{ matrix.target }}
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5
+          target: ${{ matrix.target }}
+          path: .
+          command: idf.py -B ${{ matrix.build_dir }} -D SDKCONFIG=${{ matrix.sdkconfig }} -D IDF_TARGET=${{ matrix.target }} build
