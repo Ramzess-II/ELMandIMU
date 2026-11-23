@@ -11,7 +11,7 @@
 
     pip install bleak
     python tools/nogps_ble.py
-    python tools/nogps_ble.py --name NoGPS-1B00
+    python tools/nogps_ble.py --name NonGPS-1B00
 
 Обновление прошивки (файл .bin должен быть подписан тем же ключом, что прошивка в блоке):
 
@@ -253,7 +253,7 @@ async def run(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--name", help="имя блока, например NoGPS-1B00; по умолчанию первый найденный")
+    ap.add_argument("--name", help="имя блока, например NonGPS-1B00; по умолчанию первый найденный")
     ap.add_argument("--all", action="store_true", help="печатать каждую NGD")
     ap.add_argument("--phone", default="laptop", help="ім'я в HELLO, яке блок покаже в BT_LIST")
     ap.add_argument("--ota", metavar="ФАЙЛ", help="отправить блоку прошивку (.bin) и выйти")

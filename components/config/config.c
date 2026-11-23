@@ -6,12 +6,14 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_random.h"
 #include "nvs.h"
 
 #define TAG "config"
 #define VALUE_MAX 64
 #define KEY_POWER_ONS "power_ons"
 #define KEY_QUICK_ONS "quick_ons"
+#define KEY_RECOVERY_CODE "rec_code"
 
 static uint32_t s_power_ons;
 static uint32_t s_quick_ons;
@@ -48,7 +50,8 @@ static item_t s_items[] = {
     {"wifi_off_s",    "60",   T_INT,   0, 3600,    true, "", 0},
     // Через сколько секунд после остановки двигателя усыпить ESP32 и гироскоп (блок просыпается раз
     // в 2 с измерить напряжение); 0 — не усыплять.
-    {"sleep_after_s", "600",  T_INT,   0, 86400,   true, "", 0},
+    // Above 3600 means nothing: the box sleeps an hour after the engine stops whatever this says.
+    {"sleep_after_s", "600",  T_INT,   0, 3600,    true, "", 0},
 };
 #define N_ITEMS (sizeof(s_items) / sizeof(s_items[0]))
 
@@ -429,4 +432,32 @@ void cfg_phone_erase(const char *addr)
     }
     nvs_commit(h);
     nvs_close(h);
+}
+
+// ---- recovery code ----
+
+// Six digits from the hardware random generator, never shown outside the box and its owner phone.
+static void recovery_code_make(char code[CFG_RECOVERY_CODE_LEN + 1])
+{
+    snprintf(code, CFG_RECOVERY_CODE_LEN + 1, "%06lu", (unsigned long)(esp_random() % 1000000));
+}
+
+bool cfg_recovery_code(char code[CFG_RECOVERY_CODE_LEN + 1], bool renew)
+{
+    nvs_handle_t h;
+    if (nvs_open(CONFIG_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return false;
+    }
+    size_t len = CFG_RECOVERY_CODE_LEN + 1;
+    bool ok = !renew && nvs_get_str(h, KEY_RECOVERY_CODE, code, &len) == ESP_OK &&
+              strlen(code) == CFG_RECOVERY_CODE_LEN && strspn(code, "0123456789") == CFG_RECOVERY_CODE_LEN;
+    if (!ok) {
+        recovery_code_make(code);
+        ok = nvs_set_str(h, KEY_RECOVERY_CODE, code) == ESP_OK && nvs_commit(h) == ESP_OK;
+        if (!ok) {
+            ESP_LOGE(TAG, "recovery code: NVS write failed");
+        }
+    }
+    nvs_close(h);
+    return ok;
 }
