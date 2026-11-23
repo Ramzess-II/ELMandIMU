@@ -12,6 +12,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "mbedtls/md.h"
 
 #include "ble.h"
 #include "config.h"
@@ -319,7 +320,7 @@ static void send_ngi(uint16_t to)
     send_line(to, proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s,%lu,%s",
                          PROTO_VERSION, u.version, u.build, CONFIG_IDF_TARGET, CONFIG_NOGPS_BOARD,
                          s_id, (unsigned long)(flash / 1024), (unsigned long)u.max_image, u.slot,
-                         u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI PEER" : "BLE CAR PHONES MULTI PEER",
+                         u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI PEER AUTH" : "BLE CAR PHONES MULTI PEER AUTH",
                          (unsigned long)cfg_power_ons(), CONFIG_NOGPS_HW_REVISION));
 }
 
@@ -627,6 +628,77 @@ static bool changes_box(const char *cmd)
     return false;
 }
 
+// ---- the proof of the box (spec 9.5, AUTH_SET and AUTH) ----
+
+#define AUTH_NONCE_LEN 8
+#define AUTH_PROOF_LEN 8
+
+// |hex| is exactly |len| bytes of hex digits, in either case.
+static bool hex_decode(const char *hex, uint8_t *out, size_t len)
+{
+    if (strlen(hex) != len * 2) {
+        return false;
+    }
+    for (size_t i = 0; i < len * 2; i++) {
+        char c = hex[i];
+        int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+              : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+        if (v < 0) {
+            return false;
+        }
+        out[i / 2] = (uint8_t)(i % 2 ? out[i / 2] | v : v << 4);
+    }
+    return true;
+}
+
+// AUTH_SET,<32 hex>: the phone gives the box a key once per bond. The same key again is taken, as the reply may have
+// been lost; another one is refused: a key goes away only with the bond (BT_FORGET or a new pairing).
+static void auth_set(uint16_t from, char **f, int n, int seq)
+{
+    uint8_t key[PHONE_AUTH_KEY_LEN], old[PHONE_AUTH_KEY_LEN];
+    char addr[BLE_ADDR_LEN];
+    if (n < 4 || !hex_decode(f[3], key, sizeof(key))) {
+        send_reply(from, seq, "ERR,VALUE");
+    } else if (!ble_link_addr(from, addr)) {
+        send_reply(from, seq, "ERR,BT");
+    } else if (cfg_phone_key_get(addr, old)) {
+        bool same = memcmp(old, key, sizeof(key)) == 0;
+        send_reply(from, seq, same ? "OK" : "ERR,EXISTS");
+    } else if (cfg_phone_key_set(addr, key)) {
+        send_reply(from, seq, "OK");
+    } else {
+        send_reply(from, seq, "ERR,NVS");
+    }
+    memset(key, 0, sizeof(key));
+    memset(old, 0, sizeof(old));
+}
+
+// AUTH,<16 hex nonce>: OK,<the first 8 bytes of HMAC-SHA256(key, nonce) in hex>, ERR,NOKEY if the phone gave no key.
+static void auth(uint16_t from, char **f, int n, int seq)
+{
+    uint8_t key[PHONE_AUTH_KEY_LEN], nonce[AUTH_NONCE_LEN], mac[32];
+    char addr[BLE_ADDR_LEN];
+    if (n < 4 || !hex_decode(f[3], nonce, sizeof(nonce))) {
+        send_reply(from, seq, "ERR,VALUE");
+        return;
+    }
+    if (!ble_link_addr(from, addr) || !cfg_phone_key_get(addr, key)) {
+        send_reply(from, seq, "ERR,NOKEY");
+        return;
+    }
+    int rc = mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), key, sizeof(key), nonce, sizeof(nonce), mac);
+    memset(key, 0, sizeof(key));
+    if (rc != 0) {
+        send_reply(from, seq, "ERR,AUTH");
+        return;
+    }
+    char r[8 + AUTH_PROOF_LEN * 2 + 1] = "OK,";
+    for (int i = 0; i < AUTH_PROOF_LEN; i++) {
+        snprintf(r + 3 + i * 2, sizeof(r) - 3 - i * 2, "%02x", mac[i]);
+    }
+    send_reply(from, seq, r);
+}
+
 static bool code_ok(const char *code)
 {
     return strlen(code) == 6 && strspn(code, "0123456789") == 6;
@@ -791,6 +863,10 @@ static void handle_cmd(uint16_t from, char **f, int n, int64_t now)
         }
     } else if (strcmp(cmd, "BT_LIST") == 0) {
         list_phones(from, seq);
+    } else if (strcmp(cmd, "AUTH_SET") == 0) {
+        auth_set(from, f, n, seq);
+    } else if (strcmp(cmd, "AUTH") == 0) {
+        auth(from, f, n, seq);
     } else if (strcmp(cmd, "REBOOT") == 0) {
         send_reply(from, seq, "OK");
         vTaskDelay(pdMS_TO_TICKS(200));
