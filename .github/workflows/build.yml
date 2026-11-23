@@ -4,6 +4,8 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Lets the job be started by hand, to check it without opening a PR.
+  workflow_dispatch:
 
 jobs:
   build:
