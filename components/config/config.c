@@ -193,6 +193,49 @@ float cfg_get_float(const char *key)
     return it ? it->num : 0;
 }
 
+const char *cfg_get(const char *key)
+{
+    item_t *it = find(key);
+    return it ? it->str : NULL;
+}
+
+static bool is_default(const item_t *it)
+{
+    return it->type == T_STR ? strcmp(it->str, it->def) == 0 : it->num == strtof(it->def, NULL);
+}
+
+// ";+<N>" for N up to 99.
+#define LEFT_OUT_MAX 4
+_Static_assert(N_ITEMS <= 99, "LEFT_OUT_MAX holds two digits");
+
+void cfg_get_changed(char *out, size_t size)
+{
+    size_t cap = size - 1, len = 0;
+    int left = 0;
+    for (size_t i = 0; i < N_ITEMS; i++) {
+        const item_t *it = &s_items[i];
+        if (is_default(it)) {
+            continue;
+        }
+        if (left == 0) {
+            size_t more = 0;
+            for (size_t j = i + 1; j < N_ITEMS; j++) {
+                more += !is_default(&s_items[j]);
+            }
+            size_t need = (len ? 1 : 0) + strlen(it->key) + 1 + strlen(it->str);
+            if (len + need + (more ? LEFT_OUT_MAX : 0) <= cap) {
+                len += snprintf(out + len, size - len, "%s%s=%s", len ? ";" : "", it->key, it->str);
+                continue;
+            }
+        }
+        left++;     // from the first key that does not fit, the rest are left out too
+    }
+    out[len] = 0;
+    if (left) {
+        snprintf(out + len, size - len, "%s+%d", len ? ";" : "", left);
+    }
+}
+
 esp_err_t cfg_set(const char *key, const char *value)
 {
     item_t *it = find(key);

@@ -621,6 +621,34 @@ static void list_phones(uint16_t from, int seq)
 
 // ---- команды NGC (9.5) ----
 
+// The reply of a bare GET must fit one Bluetooth line, as the phone reads it (spec 9.5).
+#define BLE_LINE_MAX 182
+
+// GET,<key>: OK,<value>. A bare GET: OK,<key>=<value>;... of the settings that are not at their default.
+static void get_setting(uint16_t from, int seq, const char *key)
+{
+    static char v[BLE_LINE_MAX];
+    static char r[BLE_LINE_MAX + 8];
+    if (key) {
+        const char *val = cfg_get(key);
+        if (val) {
+            snprintf(r, sizeof(r), "OK,%s", val);
+        } else {
+            strlcpy(r, "ERR,KEY", sizeof(r));
+        }
+    } else {
+        // '$' + "NGA,<seq>,OK," + the pairs + "*XXXX\r\n" in BLE_LINE_MAX bytes.
+        int head = snprintf(NULL, 0, "NGA,%d,OK,", seq);
+        cfg_get_changed(v, BLE_LINE_MAX - 1 - head - 7 + 1);
+        if (v[0]) {
+            snprintf(r, sizeof(r), "OK,%s", v);
+        } else {
+            strlcpy(r, "OK", sizeof(r));
+        }
+    }
+    send_reply(from, seq, r);
+}
+
 // Commands that change the box: only from the phone that came first, the others get ERR,BUSY.
 static bool changes_box(const char *cmd)
 {
@@ -737,6 +765,8 @@ static void handle_cmd(uint16_t from, char **f, int n, int64_t now)
         esp_err_t err = cfg_set(f[3], f[4]);
         send_reply(from, seq, err == ESP_OK ? "OK" : err == ESP_ERR_NOT_FOUND ? "ERR,KEY"
                                              : err == ESP_ERR_INVALID_ARG ? "ERR,VALUE" : "ERR,NVS");
+    } else if (strcmp(cmd, "GET") == 0) {
+        get_setting(from, seq, n > 3 ? f[3] : NULL);
     } else if (strcmp(cmd, "CAR_GET") == 0) {
         static char v[CAR_VALUE_MAX + 1];
         static char r[CAR_VALUE_MAX + 8];
