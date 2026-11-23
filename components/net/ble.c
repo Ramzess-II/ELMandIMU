@@ -25,6 +25,7 @@
 
 #define SECURE_DEADLINE_S   60      // not encrypted this long with the pairing window open: dropped
 #define UNPAIRED_DEADLINE_S 10      // the same with the window closed (BLE-11)
+#define IDLE_DEADLINE_S     30      // encrypted and no write to RX or OTA this long: dropped (the app sends HELLO each 1 s)
 #define UNSECURE_EVENT_MS   10000   // BT_UNSECURE not more often than this
 #define SECREQ_DELAY_MS     1500    // столько ждём, что телефон включит шифрование сам
 #define LOCKOUT_S           60      // пауза после трёх неверных кодов подряд
@@ -56,6 +57,7 @@ typedef struct {
     uint8_t tune_step;          // сколько просьб о настройке связи уже отправлено
     uint16_t mtu;
     uint32_t at_s;              // секунды от включения
+    uint32_t last_rx_s;         // the last write to RX or OTA, or the moment the link got encrypted
     uint32_t at_ms, secure_ms;  // миллисекунды от включения
 } link_t;
 
@@ -482,6 +484,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         }
         s_fails = 0;
         l->secure_ms = now_ms();
+        l->last_rx_s = now_s();
         l->secure = true;
         count_bonds();
         if (was_pairing) {
@@ -578,6 +581,7 @@ static int chr_access(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt 
     if (!l || !l->secure) {
         return BLE_ATT_ERR_INSUFFICIENT_AUTHEN;
     }
+    l->last_rx_s = now_s();
     if (attr == s_rx_handle) {
         rx_item_t it;
         it.conn = conn;
@@ -908,6 +912,15 @@ void ble_poll(void)
                 log_unsecure(l);
                 ble_gap_terminate(l->conn, BLE_ERR_REM_USER_CONN_TERM);
                 l->at_s = now;
+            } else if (l->secure && (int32_t)(now - l->last_rx_s) >= IDLE_DEADLINE_S) {
+                // A phone whose GATT client died while the link stayed up holds a slot, and two of them hide the box.
+                // The difference is signed: the host task writes last_rx_s without s_lock and can make it newer
+                // than `now` (a write to RX or OTA, or ENC_CHANGE, right after now_s()); an unsigned difference
+                // would wrap and drop a live link.
+                ESP_LOGW(TAG, "связь молчит %d с — отключаю", IDLE_DEADLINE_S);
+                events_add('W', "BT_IDLE", "%d s", IDLE_DEADLINE_S);
+                ble_gap_terminate(l->conn, BLE_ERR_REM_USER_CONN_TERM);
+                l->last_rx_s = now;
             }
         }
     }
