@@ -4,13 +4,14 @@
 Ищет блок по UUID сервиса, подключается, шлёт HELLO раз в секунду и печатает строки блока.
 Команды вводятся с клавиатуры:
   CAL_UP, CAL_BIAS, CAL_RESET, STATUS, INFO, EVENTS,1, IMU_TEST, SET,data_hz,20, SET,bt_pin,654321,
+  GET,data_hz (read a setting), GET (the settings that are not at their default),
   REBOOT, BT_PAIR,<6 цифр> (на 2 хвилини дозволити один новий телефон з цим кодом), BT_LIST,
   BT_FORGET,<адреса> (забути один телефон), BT_FORGET (забути всі)
 По умолчанию NGD печатается раз в секунду, ключ --all печатает все.
 
     pip install bleak
     python tools/nogps_ble.py
-    python tools/nogps_ble.py --name NoGPS-1B00
+    python tools/nogps_ble.py --name NonGPS-1B00
 
 Обновление прошивки (файл .bin должен быть подписан тем же ключом, что прошивка в блоке):
 
@@ -252,7 +253,7 @@ async def run(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--name", help="имя блока, например NoGPS-1B00; по умолчанию первый найденный")
+    ap.add_argument("--name", help="имя блока, например NonGPS-1B00; по умолчанию первый найденный")
     ap.add_argument("--all", action="store_true", help="печатать каждую NGD")
     ap.add_argument("--phone", default="laptop", help="ім'я в HELLO, яке блок покаже в BT_LIST")
     ap.add_argument("--ota", metavar="ФАЙЛ", help="отправить блоку прошивку (.bin) и выйти")

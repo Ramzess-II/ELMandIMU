@@ -19,6 +19,10 @@ esp_err_t led_start(void);
 // error_blinks: 0 — без ошибки, 2–4 — столько раз за 2 с гаснет (на LED_ON) или вспыхивает (на LED_IDLE).
 void led_set(led_base_t base, int error_blinks);
 
+// Switch the LED off for good: later led_set() calls do nothing. For the box that is about to go
+// dead — main keeps calling led_set() every 100 ms, and a WS2812 holds its last frame through sleep.
+void led_shutdown(void);
+
 #ifdef __cplusplus
 }
 #endif

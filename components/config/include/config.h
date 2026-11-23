@@ -31,10 +31,23 @@ uint32_t cfg_quick_power_ons(void);
 // The box has run a minute or a phone has linked: this power-on is not a quick one.
 void cfg_quick_power_ons_clear(void);
 
+// The code of the recovery window (BLE-16): random, made on first use and kept in NVS. It replaces bt_pin there, so
+// a box in the hands of a stranger does not open to a code printed in the docs. `renew` makes a new one (the old one
+// was used). False when NVS can't keep it: the window then stays shut.
+#define CFG_RECOVERY_CODE_LEN 6
+bool cfg_recovery_code(char code[CFG_RECOVERY_CODE_LEN + 1], bool renew);
+
 // Текущие значения. Настройки «сразу» меняются командой SET на ходу, остальные — после перезагрузки.
 const char *cfg_get_str(const char *key);
 int         cfg_get_int(const char *key);
 float       cfg_get_float(const char *key);
+
+// GET,<key>: the value the box works with, as text; NULL if there is no such key. A setting that is not "now"
+// shows the old value until the reboot.
+const char *cfg_get(const char *key);
+// Bare GET: "key=value;..." of the settings that differ from their default, in the order of the table, written into
+// |out| of |size| bytes. What does not fit is replaced by ";+<N>" for the N keys left out. Empty if all are default.
+void cfg_get_changed(char *out, size_t size);
 
 // SET: ESP_ERR_NOT_FOUND — нет такого ключа, ESP_ERR_INVALID_ARG — неверное значение.
 esp_err_t cfg_set(const char *key, const char *value);
