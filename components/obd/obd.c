@@ -572,16 +572,22 @@ static void obd_task(void *arg)
 }
 
 // Имитация для стола (раздел 13): синус 0–60 км/ч с периодом 60 с, отрицательная половина — стоянка.
+// Of every SIM_CYCLE_US the engine runs for SIM_DRIVE_US, then it is stopped (rpm 0, speed 0): the sine's own
+// 30 s stops never reach the 2 min bench cap of PWR-20.
 // Включается настройкой bench, чтобы плата на столе и блок в машине работали на одной прошивке.
+#define SIM_CYCLE_US ((int64_t)300 * 1000000)
+#define SIM_DRIVE_US ((int64_t)120 * 1000000)
+
 static void sim_task(void *arg)
 {
     set_info("SIMULATED", 0);
     set_state(OBD_STATE_OK, OBD_ERROR_NONE);
-    set_engine(0, 800, 14000);
     events_add('I', "OBD_OK", "SIMULATED");
     for (;;) {
         int64_t now = esp_timer_get_time();
-        double s = 60.0 * sin(2 * M_PI * (now / 1e6) / 60.0);
+        bool run = now % SIM_CYCLE_US < SIM_DRIVE_US;
+        set_engine(0, run ? 800 : 0, 14000);
+        double s = run ? 60.0 * sin(2 * M_PI * (now / 1e6) / 60.0) : 0;
         if (s_cb) {
             s_cb(s > 0 ? (int)lround(s) : 0, now);
         }
