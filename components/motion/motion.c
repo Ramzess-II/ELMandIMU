@@ -116,6 +116,7 @@ static struct {
 static bool    s_busy;              // команда принята и ещё не получила окончательный ответ
 static int     s_busy_seq;
 static int64_t s_busy_since_us;
+#define SPEED_BOGUS_KMH          255
 static int     s_speed_kmh = -1;
 static int64_t s_speed_t_us;
 static int64_t s_speed_nonzero_t_us;
@@ -789,6 +790,12 @@ esp_err_t motion_init(void)
 void motion_set_speed(int kmh, int64_t t_us)
 {
     taskENTER_CRITICAL(&s_lock);
+    // A waking ECU answers 0xFF (255 km/h) for 5-10 s. Drop it whatever the previous speed was (that one may be
+    // stale), so it neither enters dist_mm nor is reported; the last good speed ages out as usual.
+    if (kmh == SPEED_BOGUS_KMH) {
+        taskEXIT_CRITICAL(&s_lock);
+        return;
+    }
     s_speed_kmh = kmh;
     s_speed_t_us = t_us;
     if (kmh != 0) {
