@@ -220,7 +220,7 @@ static void status_poll_task(void *arg)
 void app_main(void)
 {
     init_nvs();
-    cfg_init(CONFIG_NOGPS_BT_PIN, CONFIG_NOGPS_IMU_ODR, esp_reset_reason() == ESP_RST_POWERON);
+    cfg_init(CONFIG_NOGPS_IMU_ODR, esp_reset_reason() == ESP_RST_POWERON || cfg_after_factory_reset());
     const char *fw = esp_app_get_description()->version;
     events_add('I', "BOOT", "fw %s reset %s", fw, reset_reason());
     ESP_LOGI(TAG, "включений питанием: %lu", (unsigned long)cfg_power_ons());

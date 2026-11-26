@@ -5,10 +5,12 @@
 //   OTA 02CB0004-…  Write No Rsp           куски прошивки
 // Up to BLE_LINKS phones are connected at once (spec BLE-1). Data go only to a paired phone over an encrypted
 // link. A new phone pairs only in the pairing window: 2 minutes after a power-on of a box with no phones, or after
-// BT_PAIR from a paired phone, with the code BT_PAIR gave.
-// В рекламном пакете, кроме UUID сервиса, — данные производителя: компания 0xFFFF, байт версии
-// формата (1) и байт флагов: bit 0 — the pairing window is open, bit 1 — the box has no room for a new phone,
-// bit 2 — the box has phones: a new one is added from them.
+// BT_PAIR from a paired phone, with the code BT_PAIR gave. A paired phone that pairs again (BLE-15) is taken only
+// inside a window.
+// The advertisement has, besides the UUID of the service, the manufacturer data: the company 0xFFFF, the format
+// version (2), the flags byte and the 4 ASCII characters of the box id (the XXXX of NonGPS-XXXX). Flags: bit 0 - the
+// pairing window is open, bit 1 - the box has no room for a new phone, bit 2 - the box has phones: a new one is
+// added from them.
 #pragma once
 
 #include <stdbool.h>
@@ -23,6 +25,7 @@ extern "C" {
 
 #define BLE_RX_MAX       256    // наибольшая запись в RX вместе с завершающим нулём
 #define BLE_PAIR_WINDOW  120    // окно сопряжения, с
+#define BLE_DEFAULT_CODE "123456" // the code of every window that BT_PAIR,<code> did not open
 #define BLE_LINKS        CONFIG_BT_NIMBLE_MAX_CONNECTIONS
 #define BLE_MAX_BONDS    CONFIG_BT_NIMBLE_MAX_BONDS
 #define BLE_TO_ALL       0xFFFF // ble_send: to every phone linked
@@ -38,8 +41,8 @@ typedef struct {
 } ble_state_t;
 
 // name — имя в рекламе (NonGPS-XXXX). pair_window — the box was powered on: open the pairing window if it has no
-// phones. reset — открыть окно восстановления (BLE-16): окно с bt_pin даже у блока с телефонами; привязка нового
-// телефона в нём стирает все старые, без привязки ничего не меняется.
+// phones. reset - open the recovery window (BLE-16) even on a box with phones: a new phone is added with
+// BLE_DEFAULT_CODE and erases nobody; on a full box the phone with the oldest last HELLO goes (BT_DROP).
 esp_err_t ble_start(const char *name, bool pair_window, bool reset);
 
 // Стоянка: выключить радио совсем (реклама и соединение) или включить обратно.
@@ -67,7 +70,7 @@ int ble_link_mtu(uint16_t conn);
 // Куда отдавать записи в характеристику OTA: link, смещение (4 байта) и данные. Зовётся из задачи стека.
 void ble_set_ota_cb(void (*cb)(uint16_t conn, const uint8_t *msg, size_t len));
 
-// Opens the pairing window with a code of 6 digits that works for one phone, or with the bt_pin setting if |code| is
+// Opens the pairing window with a code of 6 digits that works for one phone, or with BLE_DEFAULT_CODE if |code| is
 // NULL.
 void ble_pair_open(int seconds, const char *code);
 // The addresses of the paired phones. Returns how many, -1 on error.
@@ -76,8 +79,6 @@ int  ble_bonded(char addrs[][BLE_ADDR_LEN], int max);
 int  ble_forget_one(const char *addr, uint16_t keep);
 // Drops the link.
 void ble_drop(uint16_t conn);
-// Забыть все привязанные телефоны. Возвращает, сколько их было, -1 при ошибке.
-int  ble_forget(void);
 
 #ifdef __cplusplus
 }

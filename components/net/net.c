@@ -37,6 +37,7 @@
 #define OTA_MIN_MV        11800     // обновление не начинается при напряжении ниже 11.8 В
 #define RESTART_AFTER_US  1000000   // перезагрузка после удачного обновления
 #define BQ_LEN            12        // строк в очереди для Bluetooth
+#define FACTORY_RESET_DELAY_MS 500
 #define QUICK_RUN_US      60000000  // a power-on that has run this long is not a quick one (BLE-16)
 #define SEEN_WRITE_S      3600      // the time a phone was seen is written to the flash not more often
 #define PEER_MAX          200       // longest PEER payload
@@ -320,8 +321,8 @@ static void send_ngi(uint16_t to)
     send_line(to, proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s,%lu,%s",
                          PROTO_VERSION, u.version, u.build, CONFIG_IDF_TARGET, CONFIG_NOGPS_BOARD,
                          s_id, (unsigned long)(flash / 1024), (unsigned long)u.max_image, u.slot,
-                         u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI PEER RECOVERY AUTH"
-                                                       : "BLE CAR PHONES MULTI PEER RECOVERY AUTH",
+                         u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI PEER AUTH"
+                                                       : "BLE CAR PHONES MULTI PEER AUTH",
                          (unsigned long)cfg_power_ons(), CONFIG_NOGPS_HW_REVISION));
 }
 
@@ -654,7 +655,7 @@ static void get_setting(uint16_t from, int seq, const char *key)
 static bool changes_box(const char *cmd)
 {
     static const char *const k[] = {"SET", "CAL_BIAS", "CAL_UP", "CAL_UP2", "CAL_RESET", "CAL_FWD", "CAR_SET",
-                                    "OTA_BEGIN", "OTA_END", "OTA_ABORT", "BT_PAIR", "BT_FORGET", "BT_RECOVERY", "REBOOT"};
+                                    "OTA_BEGIN", "OTA_END", "OTA_ABORT", "BT_PAIR", "BT_FORGET", "FACTORY_RESET", "REBOOT"};
     for (size_t i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
         if (strcmp(cmd, k[i]) == 0) {
             return true;
@@ -875,15 +876,15 @@ static void handle_cmd(uint16_t from, char **f, int n, int64_t now)
         send_reply(from, seq, "OK");
     } else if (strcmp(cmd, "BT_PAIR") == 0) {
         // Команда пришла от привязанного телефона: на 2 минуты разрешаем привязать ещё один, with the code given
-        // for one phone or with bt_pin.
+        // for one phone.
         ble_state_t b;
         ble_get_state(&b);
-        if (n > 3 && !code_ok(f[3])) {
+        if (n < 4 || !code_ok(f[3])) {
             send_reply(from, seq, "ERR,VALUE");
         } else if (b.bonds >= BLE_MAX_BONDS) {
             send_reply(from, seq, "ERR,FULL");
         } else {
-            ble_pair_open(BLE_PAIR_WINDOW, n > 3 ? f[3] : NULL);
+            ble_pair_open(BLE_PAIR_WINDOW, f[3]);
             send_reply(from, seq, "OK");
         }
     } else if (strcmp(cmd, "BT_FORGET") == 0 && n > 3) {
@@ -899,22 +900,15 @@ static void handle_cmd(uint16_t from, char **f, int n, int64_t now)
             s_drop_at = now + DROP_AFTER_US;
         }
     } else if (strcmp(cmd, "BT_FORGET") == 0) {
-        int was = ble_forget();
-        if (was < 0) {
-            send_reply(from, seq, "ERR,BT");
-        } else {
-            events_add('I', "BT_FORGET", "%d", was);
-            send_reply(from, seq, "OK");
-        }
-    } else if (strcmp(cmd, "BT_RECOVERY") == 0) {
-        // The code of the recovery window, for the owner phone to keep (BLE-16). It never goes into an event.
-        char code[CFG_RECOVERY_CODE_LEN + 1], r[16];
-        if (cfg_recovery_code(code, false)) {
-            snprintf(r, sizeof(r), "OK,%s", code);
-        } else {
-            strlcpy(r, "ERR,NVS", sizeof(r));
-        }
-        send_reply(from, seq, r);
+        // Forgetting all the phones is gone: FACTORY_RESET does it, with the rest.
+        send_reply(from, seq, "ERR,VALUE");
+    } else if (strcmp(cmd, "FACTORY_RESET") == 0) {
+        // Only the leader phone gets here (changes_box). The reply goes first; then the whole NVS partition goes and the
+        // box reboots, which counts as a power-on: the pairing window opens on the empty box.
+        send_reply(from, seq, "OK");
+        vTaskDelay(pdMS_TO_TICKS(FACTORY_RESET_DELAY_MS));
+        cfg_factory_reset();
+        esp_restart();
     } else if (strcmp(cmd, "BT_LIST") == 0) {
         list_phones(from, seq);
     } else if (strcmp(cmd, "AUTH_SET") == 0) {
@@ -1180,7 +1174,7 @@ esp_err_t net_start(const char *fw_version)
     if (reset) {
         cfg_quick_power_ons_clear();
     }
-    esp_err_t err = ble_start(s_name, why == ESP_RST_POWERON || why == ESP_RST_USB, reset);
+    esp_err_t err = ble_start(s_name, why == ESP_RST_POWERON || why == ESP_RST_USB || cfg_after_factory_reset(), reset);
     if (err != ESP_OK) {
         events_add('E', "BT_ERROR", "%s", esp_err_to_name(err));
     }
