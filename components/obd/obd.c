@@ -322,7 +322,8 @@ static poll_t poll_speed(char *r)
     if (p && isxdigit((unsigned char)p[4]) && isxdigit((unsigned char)p[5])) {
         char hex[3] = {p[4], p[5], 0};
         int kmh = (int)strtol(hex, NULL, 16);
-        s_kmh = kmh;
+        // A waking ECU answers 0xFF: motion drops it, here it is not driving, so rpm and voltages keep polling.
+        s_kmh = kmh == 255 ? 0 : kmh;
         if (s_cb) {
             s_cb(kmh, (t_sent + t_done) / 2);  // OBD-6: середина между запросом и '>'
         }
