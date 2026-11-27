@@ -51,6 +51,7 @@ typedef struct {
 typedef struct {
     uint16_t conn;              // BLE_HS_CONN_HANDLE_NONE: the slot is free
     bool secure, subscribed, pairing;
+    bool admitted;              // let onto a full box by the recovery window, pairing not finished
     bool peer_bonded, secreq_sent, resolved, unsecure_logged;
     int secreq_rc;              // the result of our own ble_gap_security_initiate(), valid with secreq_sent
     int enc_status;             // the status of the last failed encryption, 0 if none
@@ -97,10 +98,6 @@ static bool s_power_window, s_reset;
 // it erases nobody; on a full box it takes the place of the phone with the oldest last HELLO (BT_DROP). Set in the
 // task of the stack and in ble_pair_open.
 static volatile bool s_recovery;
-// A phone was let onto a full box by the recovery window and has not finished pairing: its keys may be written after
-// the window ended (the user types the code late), and must still drop the least recent phone.
-static volatile bool s_admitted;
-
 static bool recovery_open(void);
 
 // ---- окно сопряжения ----
@@ -148,6 +145,18 @@ static int links_used(void)
         n += s_links[i].conn != BLE_HS_CONN_HANDLE_NONE;
     }
     return n;
+}
+
+// A phone let onto a full box by the recovery window (link_t.admitted) may write its keys after the window ended (the
+// user types the code late, or another phone closed the window first), and must still drop the least recent phone.
+static bool any_admitted(void)
+{
+    for (int i = 0; i < BLE_LINKS; i++) {
+        if (s_links[i].admitted) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void link_clear(link_t *l)
@@ -226,7 +235,7 @@ static int drop_least_recent(void);
 static int on_store_status(struct ble_store_status_event *ev, void *arg)
 {
     if (ev->event_code == BLE_STORE_EVENT_OVERFLOW) {
-        if (!recovery_open() && !s_admitted) {
+        if (!recovery_open() && !any_admitted()) {
             ESP_LOGW(TAG, "нет места для привязки");
             return BLE_HS_ENOMEM;
         }
@@ -463,7 +472,6 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
                  (unsigned long)(now_ms() - l->at_ms), ev->disconnect.reason, ev->disconnect.reason,
                  l->secure ? "" : ", шифрование так и не включилось");
         if (l->pairing) {
-            s_admitted = false;
             pair_failed(ev->disconnect.reason);
         }
         log_unsecure(l);
@@ -482,9 +490,8 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         }
         bool was_pairing = l->pairing;
         l->pairing = false;
-        if (was_pairing) {
-            s_admitted = false;
-        }
+        // Cleared after the keys were stored: the event follows the store write.
+        l->admitted = false;
         if (ev->enc_change.status != 0) {
             if (was_pairing) {
                 pair_failed(ev->enc_change.status);
@@ -585,7 +592,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
                 .passkey = passkey,
             };
             l->pairing = true;
-            s_admitted = full() && !l->peer_bonded && recovery_open();
+            l->admitted = full() && !l->peer_bonded && recovery_open();
             ble_sm_inject_io(ev->passkey.conn_handle, &io);
         }
         return 0;
