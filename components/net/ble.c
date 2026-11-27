@@ -51,7 +51,7 @@ typedef struct {
 typedef struct {
     uint16_t conn;              // BLE_HS_CONN_HANDLE_NONE: the slot is free
     bool secure, subscribed, pairing;
-    bool admitted;              // let onto a full box by the recovery window, pairing not finished
+    bool admitted;              // new phone pairing in the recovery window, not finished
     bool peer_bonded, secreq_sent, resolved, unsecure_logged;
     int secreq_rc;              // the result of our own ble_gap_security_initiate(), valid with secreq_sent
     int enc_status;             // the status of the last failed encryption, 0 if none
@@ -147,7 +147,7 @@ static int links_used(void)
     return n;
 }
 
-// A phone let onto a full box by the recovery window (link_t.admitted) may write its keys after the window ended (the
+// A new phone that began pairing in the recovery window (link_t.admitted) may write its keys after the window ended (the
 // user types the code late, or another phone closed the window first), and must still drop the least recent phone.
 static bool any_admitted(void)
 {
@@ -592,7 +592,8 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
                 .passkey = passkey,
             };
             l->pairing = true;
-            l->admitted = full() && !l->peer_bonded && recovery_open();
+            // Also with a free place: another phone may take it before this one's keys are written.
+            l->admitted = !l->peer_bonded && recovery_open();
             ble_sm_inject_io(ev->passkey.conn_handle, &io);
         }
         return 0;
