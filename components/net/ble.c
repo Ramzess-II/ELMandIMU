@@ -97,6 +97,9 @@ static bool s_power_window, s_reset;
 // it erases nobody; on a full box it takes the place of the phone with the oldest last HELLO (BT_DROP). Set in the
 // task of the stack and in ble_pair_open.
 static volatile bool s_recovery;
+// A phone was let onto a full box by the recovery window and has not finished pairing: its keys may be written after
+// the window ended (the user types the code late), and must still drop the least recent phone.
+static volatile bool s_admitted;
 
 static bool recovery_open(void);
 
@@ -223,7 +226,7 @@ static int drop_least_recent(void);
 static int on_store_status(struct ble_store_status_event *ev, void *arg)
 {
     if (ev->event_code == BLE_STORE_EVENT_OVERFLOW) {
-        if (!recovery_open()) {
+        if (!recovery_open() && !s_admitted) {
             ESP_LOGW(TAG, "нет места для привязки");
             return BLE_HS_ENOMEM;
         }
@@ -460,6 +463,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
                  (unsigned long)(now_ms() - l->at_ms), ev->disconnect.reason, ev->disconnect.reason,
                  l->secure ? "" : ", шифрование так и не включилось");
         if (l->pairing) {
+            s_admitted = false;
             pair_failed(ev->disconnect.reason);
         }
         log_unsecure(l);
@@ -478,6 +482,9 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         }
         bool was_pairing = l->pairing;
         l->pairing = false;
+        if (was_pairing) {
+            s_admitted = false;
+        }
         if (ev->enc_change.status != 0) {
             if (was_pairing) {
                 pair_failed(ev->enc_change.status);
@@ -578,6 +585,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
                 .passkey = passkey,
             };
             l->pairing = true;
+            s_admitted = full() && !l->peer_bonded && recovery_open();
             ble_sm_inject_io(ev->passkey.conn_handle, &io);
         }
         return 0;
