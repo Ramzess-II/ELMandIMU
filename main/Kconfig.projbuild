@@ -9,10 +9,6 @@ menu "NoGPS"
         string "Hardware revision of the board (the last field of the NGI line, the app shows it as \"Box NonGPS-OBD, R1\")"
         default "R1"
 
-    config NOGPS_BT_PIN
-        string "Код сопряжения Bluetooth по умолчанию (6 цифр, меняется командой SET)"
-        default "123456"
-
     config NOGPS_TEST_FLASH_STRESS
         bool "Проверка: запись во флеш в фоне (портит неработающий раздел прошивки)"
         default n

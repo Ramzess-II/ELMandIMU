@@ -15,27 +15,26 @@ extern "C" {
 #define CONFIG_NVS_NAMESPACE "nogps"
 
 // Прочитать настройки из NVS. NVS уже инициализирован.
-// Значения по умолчанию для кода сопряжения и частоты IMU берутся из сборки.
+// Значение по умолчанию частоты IMU берётся из сборки.
 // power_on — блок только что включили питанием: счётчик включений увеличивается и пишется в NVS.
-void cfg_init(const char *default_bt_pin, int default_imu_odr, bool power_on);
+void cfg_init(int default_imu_odr, bool power_on);
 
 // Сколько раз блок включали питанием (вынимали из разъёма и вставляли). Перезагрузки не считаются.
 // По этому числу приложение узнаёт, что блок могли переставить и нужна калибровка.
 uint32_t cfg_power_ons(void);
 
 // Power-ons in a row, each ended before a minute passed and before a phone linked. The third one opens the recovery
-// window (spec BLE-16): the way back for an owner who has lost all phones. Телефоны стираются, только когда в этом
-// окне привязался новый.
+// window (spec BLE-16): the way back for an owner who has lost all phones; a phone that pairs in it erases nobody.
 #define QUICK_POWER_ONS_RESET 3
 uint32_t cfg_quick_power_ons(void);
 // The box has run a minute or a phone has linked: this power-on is not a quick one.
 void cfg_quick_power_ons_clear(void);
 
-// The code of the recovery window (BLE-16): random, made on first use and kept in NVS. It replaces bt_pin there, so
-// a box in the hands of a stranger does not open to a code printed in the docs. `renew` makes a new one (the old one
-// was used). False when NVS can't keep it: the window then stays shut.
-#define CFG_RECOVERY_CODE_LEN 6
-bool cfg_recovery_code(char code[CFG_RECOVERY_CODE_LEN + 1], bool renew);
+// FACTORY_RESET: erases the whole NVS partition (settings, phones, bonds, car values, counters). The firmware, the OTA
+// slots and the eFuse stay. The caller reboots; that boot counts as a power-on (cfg_after_factory_reset).
+void cfg_factory_reset(void);
+// True on the boot that follows cfg_factory_reset.
+bool cfg_after_factory_reset(void);
 
 // Текущие значения. Настройки «сразу» меняются командой SET на ходу, остальные — после перезагрузки.
 const char *cfg_get_str(const char *key);

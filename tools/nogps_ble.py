@@ -3,10 +3,11 @@
 
 Ищет блок по UUID сервиса, подключается, шлёт HELLO раз в секунду и печатает строки блока.
 Команды вводятся с клавиатуры:
-  CAL_UP, CAL_BIAS, CAL_RESET, STATUS, INFO, EVENTS,1, IMU_TEST, SET,data_hz,20, SET,bt_pin,654321,
+  CAL_UP, CAL_BIAS, CAL_RESET, STATUS, INFO, EVENTS,1, IMU_TEST, SET,data_hz,20,
   GET,data_hz (read a setting), GET (the settings that are not at their default),
   REBOOT, BT_PAIR,<6 цифр> (на 2 хвилини дозволити один новий телефон з цим кодом), BT_LIST,
-  BT_FORGET,<адреса> (забути один телефон), BT_FORGET (забути всі)
+  BT_FORGET,<адреса> (забути один телефон),
+  FACTORY_RESET (стерти весь NVS блока і перезавантажити; лише з телефону-лідера, без підтвердження)
 По умолчанию NGD печатается раз в секунду, ключ --all печатает все.
 
     pip install bleak
@@ -18,10 +19,11 @@
     python tools/nogps_ble.py --ota build/ELMandIMU.bin
 
 Перед первым подключением ноутбук надо привязать к блоку средствами системы (Windows: Параметры →
-Bluetooth → Добавить устройство; Linux: bluetoothctl pair). Система спросит код из шести цифр — это
-настройка bt_pin, по умолчанию 123456. Блок принимает новую привязку только в «окне сопряжения»:
-2 хвилини після подачі живлення на блок без телефонів, або після команди BT_PAIR,<код> з уже
-прив'язаного телефону — тоді код той, що в команді.
+Bluetooth → Добавить устройство; Linux: bluetoothctl pair). Система спросит код из шести цифр: 123456.
+Блок принимает новую привязку только в «окне сопряжения»: 2 хвилини після подачі живлення на блок без
+телефонів, 2 хвилини після трьох швидких вмикань блока з телефонами (вікно відновлення, код 123456,
+повний блок забуває телефон із найстарішим HELLO), або після команди BT_PAIR,<код> з уже прив'язаного
+телефону — тоді код той, що в команді.
 """
 import argparse
 import asyncio
@@ -75,11 +77,16 @@ async def find(name):
     found = await BleakScanner.discover(timeout=6, return_adv=True)
     for dev, adv in found.values():
         if SVC in [u.lower() for u in adv.service_uuids] and (not name or adv.local_name == name):
-            # Данные производителя 0xFFFF: версия формата и флаги, бит 0 — окно сопряжения открыто.
+            # Manufacturer data 0xFFFF, version 2: the version, the flags (bit 0: the pairing window is open,
+            # bit 1: no room for a phone, bit 2: the box has phones) and the 4 ASCII characters of the box id.
             mfg = adv.manufacturer_data.get(0xFFFF, b"")
-            window = "открыто" if len(mfg) >= 2 and mfg[1] & 1 else "закрыто"
+            version = mfg[0] if mfg else 0
+            flags = mfg[1] if len(mfg) >= 2 else 0
+            box_id = mfg[2:6].decode("ascii", "replace") if version >= 2 and len(mfg) >= 6 else "?"
             print(f"нашёл {adv.local_name or '?'} {dev.address}, уровень {adv.rssi} дБм, "
-                  f"окно сопряжения {window}")
+                  f"формат рекламы {version}, id {box_id}, окно сопряжения "
+                  f"{'открыто' if flags & 1 else 'закрыто'}, телефоны {'есть' if flags & 4 else 'нет'}, "
+                  f"места {'нет' if flags & 2 else 'есть'}")
             return dev
     return None
 

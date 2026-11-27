@@ -6,14 +6,17 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_attr.h"
 #include "esp_random.h"
+#include "esp_system.h"
 #include "nvs.h"
+#include "nvs_flash.h"
 
 #define TAG "config"
 #define VALUE_MAX 64
 #define KEY_POWER_ONS "power_ons"
 #define KEY_QUICK_ONS "quick_ons"
-#define KEY_RECOVERY_CODE "rec_code"
+#define KEY_OLD_RECOVERY_CODE "rec_code"   // 0.5.x: the random recovery code, gone in 0.6.0
 
 static uint32_t s_power_ons;
 static uint32_t s_quick_ons;
@@ -31,8 +34,6 @@ typedef struct {
 } item_t;
 
 static item_t s_items[] = {
-    // Код, который телефон спрашивает при сопряжении по Bluetooth: ровно 6 цифр.
-    {"bt_pin",        NULL,   T_STR,   6, 6,       true, "", 0},
     {"imu_driver",    "auto", T_STR,   1, 31,      false, "", 0},
     {"imu_odr",       NULL,   T_INT,   200, 1000,  false, "", 0},
     {"still_acc",     "0.08", T_FLOAT, 0.005, 2,   true, "", 0},
@@ -74,9 +75,6 @@ static bool valid(const item_t *it, const char *v, float *num)
     if (it->type == T_STR) {
         if (len < it->min || len > it->max) {
             return false;
-        }
-        if (strcmp(it->key, "bt_pin") == 0) {
-            return strspn(v, "0123456789") == len;
         }
         return true;
     }
@@ -142,12 +140,25 @@ void cfg_quick_power_ons_clear(void)
     nvs_close(h);
 }
 
-void cfg_init(const char *default_bt_pin, int default_imu_odr, bool power_on)
+// The first boot of 0.6.0 erases the recovery code of 0.5.x: nothing reads it, and it should not stay in the flash.
+static void erase_old_recovery_code(void)
 {
+    nvs_handle_t h;
+    if (nvs_open(CONFIG_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    if (nvs_erase_key(h, KEY_OLD_RECOVERY_CODE) == ESP_OK) {
+        nvs_commit(h);
+    }
+    nvs_close(h);
+}
+
+void cfg_init(int default_imu_odr, bool power_on)
+{
+    erase_old_recovery_code();
     count_power_on(power_on);
     static char odr[12];
     snprintf(odr, sizeof(odr), "%d", default_imu_odr);
-    find("bt_pin")->def = default_bt_pin;
     find("imu_odr")->def = odr;
 
     nvs_handle_t h;
@@ -477,30 +488,28 @@ void cfg_phone_erase(const char *addr)
     nvs_close(h);
 }
 
-// ---- recovery code ----
+// ---- factory reset ----
 
-// Six digits from the hardware random generator, never shown outside the box and its owner phone.
-static void recovery_code_make(char code[CFG_RECOVERY_CODE_LEN + 1])
+#define FACTORY_MAGIC 0x4E474652u   // "NGFR"
+// RTC memory is kept over a software reset, not over a power-on.
+static RTC_NOINIT_ATTR uint32_t s_factory_magic;
+
+void cfg_factory_reset(void)
 {
-    snprintf(code, CFG_RECOVERY_CODE_LEN + 1, "%06lu", (unsigned long)(esp_random() % 1000000));
+    nvs_flash_deinit();
+    esp_err_t err = nvs_flash_erase();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "factory reset: NVS erase: %s", esp_err_to_name(err));
+    }
+    s_factory_magic = FACTORY_MAGIC;
 }
 
-bool cfg_recovery_code(char code[CFG_RECOVERY_CODE_LEN + 1], bool renew)
+bool cfg_after_factory_reset(void)
 {
-    nvs_handle_t h;
-    if (nvs_open(CONFIG_NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) {
-        return false;
+    static int after = -1;
+    if (after < 0) {
+        after = esp_reset_reason() == ESP_RST_SW && s_factory_magic == FACTORY_MAGIC;
+        s_factory_magic = 0;
     }
-    size_t len = CFG_RECOVERY_CODE_LEN + 1;
-    bool ok = !renew && nvs_get_str(h, KEY_RECOVERY_CODE, code, &len) == ESP_OK &&
-              strlen(code) == CFG_RECOVERY_CODE_LEN && strspn(code, "0123456789") == CFG_RECOVERY_CODE_LEN;
-    if (!ok) {
-        recovery_code_make(code);
-        ok = nvs_set_str(h, KEY_RECOVERY_CODE, code) == ESP_OK && nvs_commit(h) == ESP_OK;
-        if (!ok) {
-            ESP_LOGE(TAG, "recovery code: NVS write failed");
-        }
-    }
-    nvs_close(h);
-    return ok;
+    return after;
 }

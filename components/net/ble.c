@@ -51,6 +51,7 @@ typedef struct {
 typedef struct {
     uint16_t conn;              // BLE_HS_CONN_HANDLE_NONE: the slot is free
     bool secure, subscribed, pairing;
+    bool admitted;              // new phone pairing in the recovery window, not finished
     bool peer_bonded, secreq_sent, resolved, unsecure_logged;
     int secreq_rc;              // the result of our own ble_gap_security_initiate(), valid with secreq_sent
     int enc_status;             // the status of the last failed encryption, 0 if none
@@ -76,7 +77,10 @@ static void (*s_ota_cb)(uint16_t conn, const uint8_t *msg, size_t len);
 #define ADV_OPEN 0x01
 #define ADV_FULL 0x02
 #define ADV_PHONES 0x04
-static uint8_t s_mfg[4] = {0xFF, 0xFF, 1, 0};
+// Version 2: the flags byte, then the 4 characters of the box id (the XXXX of NonGPS-XXXX), as the scan response
+// may not reach a phone that has the name cached.
+#define ADV_ID_LEN 4
+static uint8_t s_mfg[4 + ADV_ID_LEN] = {0xFF, 0xFF, 2, 0, '0', '0', '0', '0'};
 static volatile uint8_t s_adv_flags;
 
 static link_t s_links[BLE_LINKS];
@@ -90,10 +94,10 @@ static volatile int s_bonds;
 static int s_fails;
 // Done once the stack is up: the box was powered on, open the recovery window.
 static bool s_power_window, s_reset;
-// Окно восстановления (BLE-16): открыто тремя быстрыми включениями. Телефоны блока стираются, только когда в нём
-// привязался новый; закрылось без привязки — ничего не изменилось. Меняется в задаче стека и в ble_pair_open.
+// The recovery window (BLE-16): opened by three quick power-ons, with the code BLE_DEFAULT_CODE. A phone that pairs in
+// it erases nobody; on a full box it takes the place of the phone with the oldest last HELLO (BT_DROP). Set in the
+// task of the stack and in ble_pair_open.
 static volatile bool s_recovery;
-
 static bool recovery_open(void);
 
 // ---- окно сопряжения ----
@@ -141,6 +145,18 @@ static int links_used(void)
         n += s_links[i].conn != BLE_HS_CONN_HANDLE_NONE;
     }
     return n;
+}
+
+// A new phone that began pairing in the recovery window (link_t.admitted) may write its keys after the window ended (the
+// user types the code late, or another phone closed the window first), and must still drop the least recent phone.
+static bool any_admitted(void)
+{
+    for (int i = 0; i < BLE_LINKS; i++) {
+        if (s_links[i].admitted) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void link_clear(link_t *l)
@@ -211,14 +227,26 @@ static void pair_failed(int status)
     gate();
 }
 
-// Штатная обработка освобождает место под новую привязку, удаляя самую старую. A full box refuses a new phone
-// before this (PASSKEY_ACTION): a paired phone is removed only on purpose, by BT_FORGET. Исключение — окно
-// восстановления: ключи пишутся уже после верного кода, а старые телефоны сразу после этого стираются все.
+// A full box refuses a new phone before this (PASSKEY_ACTION): a paired phone is removed only on purpose, by
+// BT_FORGET. The exception is the recovery window: the keys are written after the right code, and the phone with the
+// oldest last HELLO goes (BT_DROP). The stack would delete the oldest bond, whoever it is.
+static int drop_least_recent(void);
+
 static int on_store_status(struct ble_store_status_event *ev, void *arg)
 {
-    if (ev->event_code == BLE_STORE_EVENT_OVERFLOW && !recovery_open()) {
-        ESP_LOGW(TAG, "нет места для привязки");
-        return BLE_HS_ENOMEM;
+    if (ev->event_code == BLE_STORE_EVENT_OVERFLOW) {
+        if (!recovery_open() && !any_admitted()) {
+            ESP_LOGW(TAG, "нет места для привязки");
+            return BLE_HS_ENOMEM;
+        }
+        switch (ev->overflow.obj_type) {
+        case BLE_STORE_OBJ_TYPE_OUR_SEC:
+        case BLE_STORE_OBJ_TYPE_PEER_SEC:
+        case BLE_STORE_OBJ_TYPE_PEER_ADDR:
+            return drop_least_recent();
+        default:
+            break;
+        }
     }
     return ble_store_util_status_rr(ev, arg);
 }
@@ -240,47 +268,42 @@ static void count_bonds(void)
 
 // ---- реклама и соединение ----
 
-// В окне восстановления привязался новый телефон: все остальные стираются, их связи рвутся, окно закрывается.
-// Зовётся из задачи стека.
-static void recovery_done(const ble_addr_t *keep, uint16_t keep_conn)
+// The recovery window on a full box: the phone with the oldest last HELLO is forgotten and its link drops. A phone
+// that never told the time (0) goes first. Called from the task of the stack. 0 if a place is free now.
+static int drop_least_recent(void)
 {
     ble_addr_t peers[BLE_MAX_BONDS];
-    int n = 0, erased = 0, failed = 0;
-    if (ble_store_util_bonded_peers(peers, &n, BLE_MAX_BONDS) == 0) {
-        for (int i = 0; i < n; i++) {
-            if (ble_addr_cmp(&peers[i], keep) == 0) {
-                continue;
-            }
-            for (int k = 0; k < BLE_LINKS; k++) {
-                struct ble_gap_conn_desc d;
-                if (s_links[k].conn != BLE_HS_CONN_HANDLE_NONE && s_links[k].conn != keep_conn &&
-                    ble_gap_conn_find(s_links[k].conn, &d) == 0 && ble_addr_cmp(&d.peer_id_addr, &peers[i]) == 0) {
-                    ble_gap_terminate(s_links[k].conn, BLE_ERR_REM_USER_CONN_TERM);
-                }
-            }
-            if (ble_store_util_delete_peer(&peers[i]) == 0) {
-                char a[BLE_ADDR_LEN];
-                addr_str(&peers[i], a);
-                cfg_phone_erase(a);
-                erased++;
-            } else {
-                failed++;
-            }
+    int n = 0, victim = -1;
+    uint32_t oldest = UINT32_MAX;
+    if (ble_store_util_bonded_peers(peers, &n, BLE_MAX_BONDS) != 0 || n == 0) {
+        return BLE_HS_ENOMEM;
+    }
+    for (int i = 0; i < n; i++) {
+        char a[BLE_ADDR_LEN], name[PHONE_NAME_MAX + 1];
+        uint32_t seen = 0;
+        addr_str(&peers[i], a);
+        cfg_phone_get(a, name, sizeof(name), &seen);
+        if (seen < oldest || victim < 0) {
+            oldest = seen;
+            victim = i;
         }
     }
-    // The new phone has no record yet. When every old bond is gone, erasing all also drops the records of bonds
-    // that NimBLE deleted itself on a full store (BLE_STORE_EVENT_OVERFLOW).
-    if (failed == 0) {
-        cfg_phone_erase(NULL);
+    for (int k = 0; k < BLE_LINKS; k++) {
+        struct ble_gap_conn_desc d;
+        if (s_links[k].conn != BLE_HS_CONN_HANDLE_NONE && ble_gap_conn_find(s_links[k].conn, &d) == 0 &&
+            ble_addr_cmp(&d.peer_id_addr, &peers[victim]) == 0) {
+            ble_gap_terminate(s_links[k].conn, BLE_ERR_REM_USER_CONN_TERM);
+        }
+    }
+    int rc = ble_store_util_delete_peer(&peers[victim]);
+    if (rc == 0) {
+        char a[BLE_ADDR_LEN];
+        addr_str(&peers[victim], a);
+        cfg_phone_erase(a);
+        events_add('W', "BT_DROP", "%s", a);
     }
     count_bonds();
-    window_close();
-    // The code was typed on a phone, maybe seen by others: the next recovery needs a new one.
-    char code[CFG_RECOVERY_CODE_LEN + 1];
-    if (!cfg_recovery_code(code, true)) {
-        ESP_LOGW(TAG, "the recovery code was not renewed");
-    }
-    events_add('W', "BT_RESET", "%d", erased);
+    return rc;
 }
 
 static int gap_event(struct ble_gap_event *ev, void *arg);
@@ -301,6 +324,10 @@ static int set_adv_data(void)
     f.num_uuids128 = 1;
     f.uuids128_is_complete = 1;
     s_mfg[3] = flags;
+    // s_name is "NonGPS-XXXX".
+    if (strlen(s_name) >= ADV_ID_LEN) {
+        memcpy(s_mfg + 4, s_name + strlen(s_name) - ADV_ID_LEN, ADV_ID_LEN);
+    }
     f.mfg_data = s_mfg;
     f.mfg_data_len = sizeof(s_mfg);
     int rc = ble_gap_adv_set_fields(&f);
@@ -463,6 +490,8 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         }
         bool was_pairing = l->pairing;
         l->pairing = false;
+        // Cleared after the keys were stored: the event follows the store write.
+        l->admitted = false;
         if (ev->enc_change.status != 0) {
             if (was_pairing) {
                 pair_failed(ev->enc_change.status);
@@ -493,9 +522,7 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
             // A new phone has no name until its HELLO: drop the record of a phone forgotten with the same address.
             cfg_phone_erase(a);
             events_add('I', "BT_PAIRED", "%s bonds %d", a, (int)s_bonds);
-            if (recovery_open()) {
-                recovery_done(&d.peer_id_addr, ev->enc_change.conn_handle);
-            } else if (s_code_once) {
+            if (recovery_open() || s_code_once) {
                 window_close();
             }
         } else {
@@ -534,9 +561,13 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_REPEAT_PAIRING:
-        // A paired phone pairs again (it deleted the bond). Only an open window gets here: the request is refused
-        // earlier otherwise. The old bond has to go before RETRY: NimBLE reads the store again and silently
-        // ignores the request while the bond is there, so the phone would never pair.
+        // A paired phone pairs again (it deleted the bond). Outside a window the bond stays and the request is
+        // ignored: a stranger who spoofs the address of a paired phone must not erase its bond (BLE-15). In a window the
+        // old bond has to go before RETRY: NimBLE reads the store again and silently ignores the request while the
+        // bond is there, so the phone would never pair.
+        if (!pairing_allowed()) {
+            return BLE_GAP_REPEAT_PAIRING_IGNORE;
+        }
         if (ble_gap_conn_find(ev->repeat_pairing.conn_handle, &d) == 0) {
             ble_store_util_delete_peer(&d.peer_id_addr);
             count_bonds();
@@ -561,6 +592,8 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
                 .passkey = passkey,
             };
             l->pairing = true;
+            // Also with a free place: another phone may take it before this one's keys are written.
+            l->admitted = !l->peer_bonded && recovery_open();
             ble_sm_inject_io(ev->passkey.conn_handle, &io);
         }
         return 0;
@@ -656,20 +689,12 @@ static void on_sync(void)
     // Once, at the first start of the stack after a power-on.
     if (s_reset) {
         s_reset = false;
-        // A box without phones has nothing to recover, and no phone could have read the recovery code: it keeps the
-        // power-on window with bt_pin (BLE-12) below.
+        // A box without phones has nothing to recover: it keeps the power-on window (BLE-12) below.
         if (s_bonds > 0) {
             s_power_window = false;
-            // The phones stay for now: only a new one bonded in this window erases them (recovery_done). The window
-            // takes the recovery code, not bt_pin; the code goes to the UART only, so it takes the box and a cable.
-            char code[CFG_RECOVERY_CODE_LEN + 1];
-            if (cfg_recovery_code(code, false)) {
-                ble_pair_open(BLE_PAIR_WINDOW, code);
-                s_recovery = true;
-                ESP_LOGW(TAG, "recovery window, code %s: a new phone erases the %d old", code, (int)s_bonds);
-            } else {
-                ESP_LOGE(TAG, "recovery window stays shut: no recovery code");
-            }
+            ble_pair_open(BLE_PAIR_WINDOW, BLE_DEFAULT_CODE);
+            s_recovery = true;
+            ESP_LOGW(TAG, "recovery window: a new phone is added, the old %d stay", (int)s_bonds);
         }
     }
     if (s_power_window) {
@@ -936,7 +961,7 @@ void ble_set_ota_cb(void (*cb)(uint16_t conn, const uint8_t *msg, size_t len))
 void ble_pair_open(int seconds, const char *code)
 {
     taskENTER_CRITICAL(&s_code_lock);
-    strlcpy(s_code, code ? code : cfg_get_str("bt_pin"), sizeof(s_code));
+    strlcpy(s_code, code ? code : BLE_DEFAULT_CODE, sizeof(s_code));
     s_code_once = code != NULL;
     s_window_until = now_s() + seconds;
     taskEXIT_CRITICAL(&s_code_lock);
@@ -1007,23 +1032,4 @@ void ble_drop(uint16_t conn)
         ble_gap_terminate(conn, BLE_ERR_REM_USER_CONN_TERM);
     }
     xSemaphoreGive(s_lock);
-}
-
-int ble_forget(void)
-{
-    if (!s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(500)) != pdTRUE) {
-        return -1;
-    }
-    int n = -1;
-    if (s_up) {
-        n = s_bonds;
-        if (ble_store_clear() != 0) {
-            n = -1;
-        } else {
-            cfg_phone_erase(NULL);
-        }
-        count_bonds();
-    }
-    xSemaphoreGive(s_lock);
-    return n;
 }
