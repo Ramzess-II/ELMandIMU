@@ -354,7 +354,11 @@ static void power_task(void *arg)
             int sleep_s = cfg_get_int("sleep_after_s");
             // sleep_after_s считается от остановки двигателя, стоянка началась на off_s позже.
             int64_t sleep_at = parked_since + (int64_t)(sleep_s > off_s ? sleep_s - off_s : 0) * 1000000;
-            if (off_s == 0 && !over_cap) {
+            // An update may start while the status still shows the radio on (the grace after WIFI_OFF).
+            bool in_grace = radio_off_at && now - radio_off_at < (int64_t)RADIO_OFF_GRACE_MS * 1000;
+            if (hold && in_grace) {
+                why = "update";
+            } else if (off_s == 0 && !over_cap) {
                 why = "saving off";
             } else if (!trusted) {
                 why = "no voltage";
@@ -375,6 +379,7 @@ static void power_task(void *arg)
                 engine_off_since = 0;
                 over_cap = false;
                 lock_since = 0;
+                radio_off_at = 0;
                 keep_until = now + (int64_t)off_s * 1000000;
                 obd_set_paused(false);
                 events_add('I', "WIFI_ON", "%s %d mV", why, v);
