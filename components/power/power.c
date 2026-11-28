@@ -45,6 +45,8 @@
 #define LOW_US           60000000
 #define LOCK_MV          11000      // BATT_LOCK: below this for LOCK_US with the engine not running
 #define LOCK_US          10000000   // the cranking dip is under a second, so it never gets here
+// After WIFI_OFF the radio stays on this long, so the event line reaches the linked phones (as after BATT_LOCK).
+#define RADIO_OFF_GRACE_MS 1000
 // No setting keeps the box awake longer than this after the engine stopped (shorter on the bench).
 #define AWAKE_MAX_US       ((int64_t)3600 * 1000000)
 #define AWAKE_MAX_BENCH_US ((int64_t)120 * 1000000)
@@ -227,7 +229,7 @@ static void power_task(void *arg)
 
     bool parked = false, radio = true;
     bool verified = false, mismatch_reported = false, untrusted_logged = false, low_reported = false;
-    int64_t engine_off_since = 0, lock_since = 0, keep_until = 0, parked_since = 0, mismatch_since = 0, low_since = 0, last_save = 0;
+    int64_t radio_off_at = 0, engine_off_since = 0, lock_since = 0, keep_until = 0, parked_since = 0, mismatch_since = 0, low_since = 0, last_save = 0;
     uint32_t ref_seq = 0;
     float acc_sum = 0, base = 0;
     int acc_n = 0, acc_src = 0;
@@ -328,6 +330,7 @@ static void power_task(void *arg)
             bool want = (!over_cap || hold) && (off_s == 0 || !trusted || now < keep_until);
             if (want != radio) {
                 radio = want;
+                radio_off_at = want ? 0 : now;
                 // Имена событий остались от Wi-Fi: на них написаны журналы и разборщики.
                 events_add('I', want ? "WIFI_ON" : "WIFI_OFF", "%s rpm %d %d mV",
                            want && !trusted ? "no trusted divider" : want ? "engine on" : over_cap ? "engine off 1 h" : "engine off",
@@ -351,7 +354,11 @@ static void power_task(void *arg)
             int sleep_s = cfg_get_int("sleep_after_s");
             // sleep_after_s считается от остановки двигателя, стоянка началась на off_s позже.
             int64_t sleep_at = parked_since + (int64_t)(sleep_s > off_s ? sleep_s - off_s : 0) * 1000000;
-            if (off_s == 0 && !over_cap) {
+            // An update may start while the status still shows the radio on (the grace after WIFI_OFF).
+            bool in_grace = radio_off_at && now - radio_off_at < (int64_t)RADIO_OFF_GRACE_MS * 1000;
+            if (hold && in_grace) {
+                why = "update";
+            } else if (off_s == 0 && !over_cap) {
                 why = "saving off";
             } else if (!trusted) {
                 why = "no voltage";
@@ -372,6 +379,7 @@ static void power_task(void *arg)
                 engine_off_since = 0;
                 over_cap = false;
                 lock_since = 0;
+                radio_off_at = 0;
                 keep_until = now + (int64_t)off_s * 1000000;
                 obd_set_paused(false);
                 events_add('I', "WIFI_ON", "%s %d mV", why, v);
@@ -409,7 +417,8 @@ static void power_task(void *arg)
 
         taskENTER_CRITICAL(&s_lock);
         s_st.parked = parked;
-        s_st.radio = radio;
+        // The grace keeps the radio of the status on after WIFI_OFF; parking waits for the radio to be off.
+        s_st.radio = radio || (radio_off_at && now - radio_off_at < (int64_t)RADIO_OFF_GRACE_MS * 1000);
         s_st.engine = engine;
         s_st.adc_mv = v;
         s_st.k_milli = k_milli;

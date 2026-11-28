@@ -321,8 +321,8 @@ static void send_ngi(uint16_t to)
     send_line(to, proto_line(s_out, sizeof(s_out), "NGI,%d,%s,%s,%s,%s,%s,%lu,%lu,%s,%s,%s,%lu,%s",
                          PROTO_VERSION, u.version, u.build, CONFIG_IDF_TARGET, CONFIG_NOGPS_BOARD,
                          s_id, (unsigned long)(flash / 1024), (unsigned long)u.max_image, u.slot,
-                         u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI PEER AUTH"
-                                                       : "BLE CAR PHONES MULTI PEER AUTH",
+                         u.slot_state, u.can_update ? "BLE OTA CAR PHONES MULTI PEER AUTH RADIO_OFF"
+                                                       : "BLE CAR PHONES MULTI PEER AUTH RADIO_OFF",
                          (unsigned long)cfg_power_ons(), CONFIG_NOGPS_HW_REVISION));
 }
 
