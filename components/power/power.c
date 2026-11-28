@@ -45,6 +45,8 @@
 #define LOW_US           60000000
 #define LOCK_MV          11000      // BATT_LOCK: below this for LOCK_US with the engine not running
 #define LOCK_US          10000000   // the cranking dip is under a second, so it never gets here
+// The radio stays on this long after the WIFI_OFF event, so the line reaches the linked phones.
+#define RADIO_OFF_GRACE_MS 1000
 // No setting keeps the box awake longer than this after the engine stopped (shorter on the bench).
 #define AWAKE_MAX_US       ((int64_t)3600 * 1000000)
 #define AWAKE_MAX_BENCH_US ((int64_t)120 * 1000000)
@@ -332,6 +334,11 @@ static void power_task(void *arg)
                 events_add('I', want ? "WIFI_ON" : "WIFI_OFF", "%s rpm %d %d mV",
                            want && !trusted ? "no trusted divider" : want ? "engine on" : over_cap ? "engine off 1 h" : "engine off",
                            obd.rpm, v);
+                // The radio is switched off from the published status below: the second lets the event
+                // reach the linked phones, which read a lost link without it as a box that was cut off.
+                if (!want) {
+                    vTaskDelay(pdMS_TO_TICKS(RADIO_OFF_GRACE_MS));
+                }
             }
             if (!trusted && !untrusted_logged) {
                 untrusted_logged = true;
