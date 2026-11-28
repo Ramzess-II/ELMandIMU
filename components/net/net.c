@@ -688,7 +688,8 @@ static bool hex_decode(const char *hex, uint8_t *out, size_t len)
 }
 
 // AUTH_SET,<32 hex>: the phone gives the box a key once per bond. The same key again is taken, as the reply may have
-// been lost; another one is refused: a key goes away only with the bond (BT_FORGET or a new pairing).
+// been lost; another one is refused, unless the phone paired with the code on this link: a key goes away only with
+// the bond (BT_FORGET) or is replaced by the phone that paired again.
 static void auth_set(uint16_t from, char **f, int n, int seq)
 {
     uint8_t key[PHONE_AUTH_KEY_LEN], old[PHONE_AUTH_KEY_LEN];
@@ -697,7 +698,7 @@ static void auth_set(uint16_t from, char **f, int n, int seq)
         send_reply(from, seq, "ERR,VALUE");
     } else if (!ble_link_addr(from, addr)) {
         send_reply(from, seq, "ERR,BT");
-    } else if (cfg_phone_key_get(addr, old)) {
+    } else if (cfg_phone_key_get(addr, old) && (memcmp(old, key, sizeof(key)) == 0 || !ble_link_paired(from))) {
         bool same = memcmp(old, key, sizeof(key)) == 0;
         send_reply(from, seq, same ? "OK" : "ERR,EXISTS");
     } else if (cfg_phone_key_set(addr, key)) {
