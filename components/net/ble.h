@@ -64,6 +64,8 @@ void ble_poll(void);
 bool ble_link_up(uint16_t conn);
 // The identity address of the phone of the link. false if there is no such link.
 bool ble_link_addr(uint16_t conn, char addr[BLE_ADDR_LEN]);
+// The phone of the link paired with the code on it, not only reconnected with its bond.
+bool ble_link_paired(uint16_t conn);
 // The payload of one notification or write of the link.
 int ble_link_mtu(uint16_t conn);
 

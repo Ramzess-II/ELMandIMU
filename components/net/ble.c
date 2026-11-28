@@ -52,6 +52,7 @@ typedef struct {
     uint16_t conn;              // BLE_HS_CONN_HANDLE_NONE: the slot is free
     bool secure, subscribed, pairing;
     bool admitted;              // new phone pairing in the recovery window, not finished
+    bool paired;                // paired with the code on this link: AUTH_SET may replace the key of the phone
     bool peer_bonded, secreq_sent, resolved, unsecure_logged;
     int secreq_rc;              // the result of our own ble_gap_security_initiate(), valid with secreq_sent
     int enc_status;             // the status of the last failed encryption, 0 if none
@@ -519,8 +520,9 @@ static int gap_event(struct ble_gap_event *ev, void *arg)
         if (was_pairing) {
             char a[BLE_ADDR_LEN];
             addr_str(&d.peer_id_addr, a);
-            // A new phone has no name until its HELLO: drop the record of a phone forgotten with the same address.
-            cfg_phone_erase(a);
+            // A phone that pairs again keeps its record and key: it may still hold the key as proven and would
+            // refuse the box on ERR,NOKEY (#37). A phone that lost the key replaces it on this link (AUTH_SET).
+            l->paired = true;
             events_add('I', "BT_PAIRED", "%s bonds %d", a, (int)s_bonds);
             if (recovery_open() || s_code_once) {
                 window_close();
@@ -838,6 +840,17 @@ bool ble_link_addr(uint16_t conn, char addr[BLE_ADDR_LEN])
     }
     xSemaphoreGive(s_lock);
     return ok;
+}
+
+bool ble_link_paired(uint16_t conn)
+{
+    if (!s_lock || xSemaphoreTake(s_lock, pdMS_TO_TICKS(500)) != pdTRUE) {
+        return false;
+    }
+    link_t *l = s_up ? link_find(conn) : NULL;
+    bool paired = l && l->paired;
+    xSemaphoreGive(s_lock);
+    return paired;
 }
 
 static int chunks(int len, int max)
